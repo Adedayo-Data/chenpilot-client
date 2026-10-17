@@ -9,6 +9,8 @@ import chatReducer, {
   updateMessage,
   getMessageTimestamp,
   sortMessagesChronologically,
+  generateConversationTitle,
+  setCurrentConversation,
 } from './chatSlice';
 import authReducer from './authSlice';
 import apiService from '@/services/api';
@@ -61,6 +63,46 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     store = createTestStore();
+  });
+
+  describe('Conversation titles', () => {
+    it('collapses whitespace and limits titles to 60 characters', () => {
+      expect(generateConversationTitle('  What\n\tshould   I do?  ')).toBe('What should I do?');
+      expect(generateConversationTitle('a'.repeat(61))).toBe(`${'a'.repeat(57)}...`);
+      expect(generateConversationTitle('😀'.repeat(61))).toBe(`${'😀'.repeat(57)}...`);
+    });
+
+    it('uses the default title for whitespace-only input', () => {
+      expect(generateConversationTitle(' \n\t ')).toBe('New Chat');
+    });
+
+    it('sets the title from the first user message and preserves it afterwards', () => {
+      const conversation = {
+        id: 'conversation-1',
+        title: 'New Chat',
+        isActive: true,
+        createdAt: '2026-09-29T10:00:00.000Z',
+        updatedAt: '2026-09-29T10:00:00.000Z',
+        userId: 'user-1',
+        messageCount: 0,
+      };
+      let state = chatReducer(undefined, { type: '' });
+      state = chatReducer(state, setCurrentConversation(conversation));
+      state = chatReducer(state, addMessage({
+        id: 'user-1',
+        type: 'user',
+        content: 'First question',
+        timestamp: '2026-09-29T10:00:01.000Z',
+      }));
+      state = chatReducer(state, addMessage({
+        id: 'user-2',
+        type: 'user',
+        content: 'A later question',
+        timestamp: '2026-09-29T10:00:02.000Z',
+      }));
+
+      expect(state.currentConversation?.title).toBe('First question');
+    });
   });
 
   describe('Timestamp Extraction & Sorting Helpers', () => {

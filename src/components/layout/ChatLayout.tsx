@@ -43,24 +43,17 @@ export function ChatLayout({ children }: ChatLayoutProps) {
 
   // Convert chat history object to array for display
   const chatHistoryList = React.useMemo(() => {
-    return Object.entries(chatHistory)
-      .map(([conversationId, messages]) => {
+    return conversations
+      .map((conversation) => {
+        const messages = chatHistory[conversation.id] || conversation.messages || [];
         const lastMessage = messages[messages.length - 1];
-        const firstUserMessage = messages.find((msg) => msg.type === "user");
         return {
-          id: conversationId,
-          title: firstUserMessage
-            ? typeof firstUserMessage.content === "string" &&
-              firstUserMessage.content.length > 50
-              ? firstUserMessage.content.substring(0, 50) + "..."
-              : typeof firstUserMessage.content === "string"
-                ? firstUserMessage.content
-                : "New Chat"
-            : "New Chat",
+          id: conversation.id,
+          title: conversation.title?.trim() || "New Chat",
           lastMessage:
             typeof lastMessage?.content === "string" ? lastMessage.content : "",
-          timestamp: lastMessage?.timestamp || new Date().toISOString(),
-          messageCount: messages.length,
+          timestamp: lastMessage?.timestamp || conversation.updatedAt,
+          messageCount: conversation.messageCount || messages.length,
         };
       })
       .sort(
@@ -68,7 +61,7 @@ export function ChatLayout({ children }: ChatLayoutProps) {
           new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
       )
       .slice(0, 10); // Show last 10 conversations
-  }, [chatHistory]);
+  }, [chatHistory, conversations]);
 
   const profileMenuItems = [
     {

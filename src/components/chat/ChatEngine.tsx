@@ -15,6 +15,7 @@ import AgentMessage from "@/components/chat/AgentMessage";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
+import { ChatComposerField } from "@/components/chat/ChatComposerField";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
 import {
   Send,
@@ -109,7 +110,6 @@ export const ChatEngine: React.FC = () => {
   const [speechResult, setSpeechResult] = useState("");
   const [isListening, setIsListening] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   // ── Legacy speech-to-text (transcription → text input) ───────────────────
   // Kept for the Mic button when MediaRecorder is NOT supported
@@ -132,7 +132,7 @@ export const ChatEngine: React.FC = () => {
   } = useVoiceRecorder();
 
   const isVoiceRecording = voiceStatus === 'recording';
-  const isVoicePreview  = voiceStatus === 'stopped';
+  const isVoicePreview = voiceStatus === 'stopped';
 
   // ── Thread handlers ───────────────────────────────────────────────────────
   const handleOpenThread = (messageId: string) => {
@@ -320,6 +320,21 @@ export const ChatEngine: React.FC = () => {
     }
   };
 
+  const handleComposerEscape = () => {
+    setInputValue("");
+    if (isVoiceRecording) cancelRecording();
+    if (isLegacyRecording) {
+      recognitionRef.current?.abort();
+      setIsLegacyRecording(false);
+      setIsRecording(false);
+      if (legacyTimerRef.current) {
+        clearInterval(legacyTimerRef.current);
+        legacyTimerRef.current = null;
+      }
+      setLegacyRecordingTime(0);
+    }
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
@@ -446,19 +461,13 @@ export const ChatEngine: React.FC = () => {
       className={`w-full ${isSticky ? "max-w-4xl mx-auto px-4 py-6" : "max-w-3xl mb-8"}`}
     >
       <div className="relative bg-[#1A1A2E] rounded-2xl p-6 border border-gray-800/50 shadow-xl">
-        <input
-          ref={inputRef}
+        <ChatComposerField
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSendMessage();
-            }
-          }}
+          onChange={setInputValue}
+          onSend={() => handleSendMessage()}
+          onEscape={handleComposerEscape}
           placeholder={isRecording ? "Listening..." : "Ask ChenPilot..."}
           disabled={isRecording}
-          className="w-full bg-transparent border-none text-white placeholder:text-gray-500 focus:outline-none text-lg mb-4"
         />
 
         {isRecording && (
@@ -486,11 +495,10 @@ export const ChatEngine: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowTools(!showTools)}
-              className={`flex items-center space-x-2 px-4 py-2 text-sm rounded-lg transition-colors ${
-                selectedTool
+              className={`flex items-center space-x-2 px-4 py-2 text-sm rounded-lg transition-colors ${selectedTool
                   ? "text-purple-300 bg-purple-600/20 border border-purple-500/30"
                   : "text-gray-400 hover:bg-gray-800/50 hover:text-white"
-              }`}
+                }`}
             >
               <span className="text-lg">+</span>
               <span>Tools</span>
@@ -505,17 +513,16 @@ export const ChatEngine: React.FC = () => {
 
           <button
             type="button"
-onClick={() =>
+            onClick={() =>
               inputValue.trim() ? handleSendMessage() : toggleVoiceRecording()
             }
             disabled={isChatLoading || isTyping}
-            className={`p-3 rounded-lg transition-colors ${
-              isRecording
+            className={`p-3 rounded-lg transition-colors ${isRecording
                 ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
                 : inputValue.trim()
                   ? "bg-purple-600 text-white hover:bg-purple-700"
                   : "text-gray-400 hover:bg-gray-800/50 hover:text-white"
-            }`}
+              }`}
           >
             {isRecording ? (
               <Square className="h-6 w-6" />
@@ -558,22 +565,22 @@ onClick={() =>
                   isVoiceRecording || isLegacyRecording
                     ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
                     : inputValue.trim()
-                    ? 'bg-purple-600 text-white hover:bg-purple-700'
-                    : 'text-gray-400 hover:bg-gray-800/50 hover:text-white',
+                      ? 'bg-purple-600 text-white hover:bg-purple-700'
+                      : 'text-gray-400 hover:bg-gray-800/50 hover:text-white',
                 )}
                 title={
                   isVoiceRecording || isLegacyRecording
                     ? 'Stop recording'
                     : inputValue.trim()
-                    ? 'Send message'
-                    : 'Record voice message'
+                      ? 'Send message'
+                      : 'Record voice message'
                 }
                 aria-label={
                   isVoiceRecording || isLegacyRecording
                     ? 'Stop recording'
                     : inputValue.trim()
-                    ? 'Send message'
-                    : 'Record voice message'
+                      ? 'Send message'
+                      : 'Record voice message'
                 }
               >
                 {isVoiceRecording || isLegacyRecording ? (
@@ -585,135 +592,134 @@ onClick={() =>
                 )}
               </button>
             )}
+        </div>
+      </div>
+
+      {showTools && (
+        <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden z-20">
+          <div className="py-1">
+            {agentTools.map((tool, index) => {
+              const IconComponent = tool.icon;
+              const isSelected = selectedTool === tool.name;
+              return (
+                <button
+                  key={index}
+                  onClick={() => handleToolSelect(tool.name)}
+                  className={`w-full flex items-center space-x-3 px-4 py-3 hover:bg-gray-800 transition-colors text-left ${isSelected
+                      ? "bg-purple-600/10 border-l-2 border-purple-500"
+                      : ""
+                    }`}
+                >
+                  <div
+                    className={`${isSelected ? "text-purple-400" : "text-gray-400"}`}
+                  >
+                    <IconComponent className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1">
+                    <div
+                      className={`text-sm font-medium ${isSelected ? "text-purple-300" : "text-white"}`}
+                    >
+                      {tool.name}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {tool.description}
+                    </div>
+                  </div>
+                  {isSelected && (
+                    <CheckCircle className="h-4 w-4 text-purple-400" />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
-
-        {showTools && (
-          <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden z-20">
-            <div className="py-1">
-              {agentTools.map((tool, index) => {
-                const IconComponent = tool.icon;
-                const isSelected = selectedTool === tool.name;
-                return (
-                  <button
-                    key={index}
-                    onClick={() => handleToolSelect(tool.name)}
-                    className={`w-full flex items-center space-x-3 px-4 py-3 hover:bg-gray-800 transition-colors text-left ${
-                      isSelected
-                        ? "bg-purple-600/10 border-l-2 border-purple-500"
-                        : ""
-                    }`}
-                  >
-                    <div
-                      className={`${isSelected ? "text-purple-400" : "text-gray-400"}`}
-                    >
-                      <IconComponent className="h-4 w-4" />
-                    </div>
-                    <div className="flex-1">
-                      <div
-                        className={`text-sm font-medium ${isSelected ? "text-purple-300" : "text-white"}`}
-                      >
-                        {tool.name}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {tool.description}
-                      </div>
-                    </div>
-                    {isSelected && (
-                      <CheckCircle className="h-4 w-4 text-purple-400" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
+      )}
     </div>
+    </div >
   );
 
-  // ── Render ────────────────────────────────────────────────────────────────
-  return (
-    <div className="h-full flex flex-col bg-[#0F0F23] text-white overflow-hidden relative">
-      <OfflineIndicator />
-      <div className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center p-8">
-            <div className="text-center mb-8">
-              <div className="flex items-center justify-center mb-4">
-                <Sun className="h-8 w-8 text-orange-400 mr-3" />
-                <h2 className="text-2xl font-light text-white">
-                  Happy{" "}
-                  {new Date().toLocaleDateString("en-US", { weekday: "long" })},{" "}
-                  {user?.name || "User"}
-                </h2>
-              </div>
-              <p className="text-lg text-gray-400">What can we do today?</p>
+// ── Render ────────────────────────────────────────────────────────────────
+return (
+  <div className="h-full flex flex-col bg-[#0F0F23] text-white overflow-hidden relative">
+    <OfflineIndicator />
+    <div className="flex-1 overflow-y-auto">
+      {messages.length === 0 ? (
+        <div className="h-full flex flex-col items-center justify-center p-8">
+          <div className="text-center mb-8">
+            <div className="flex items-center justify-center mb-4">
+              <Sun className="h-8 w-8 text-orange-400 mr-3" />
+              <h2 className="text-2xl font-light text-white">
+                Happy{" "}
+                {new Date().toLocaleDateString("en-US", { weekday: "long" })},{" "}
+                {user?.name || "User"}
+              </h2>
             </div>
-            {renderInput(false)}
+            <p className="text-lg text-gray-400">What can we do today?</p>
+          </div>
+          {renderInput(false)}
 
-            <div className="w-full max-w-2xl">
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {[
-                  "Check wallet balance",
-                  "Recent transactions",
-                  "Deploy Stellar account",
-                  "Create contact",
-                  "Swap USDC to XLM",
-                  "Bitcoin price",
-                ].map((question, index) => (
-                  <button
-                    key={index}
-                    onClick={() => setInputValue(question)}
-                    className="text-left px-3 py-2 bg-transparent border border-gray-700/50 rounded-lg hover:border-gray-600 transition-colors text-gray-400 hover:text-white"
-                  >
-                    <span className="text-xs font-medium">{question}</span>
-                  </button>
-                ))}
-              </div>
+          <div className="w-full max-w-2xl">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              {[
+                "Check wallet balance",
+                "Recent transactions",
+                "Deploy Stellar account",
+                "Create contact",
+                "Swap USDC to XLM",
+                "Bitcoin price",
+              ].map((question, index) => (
+                <button
+                  key={index}
+                  onClick={() => setInputValue(question)}
+                  className="text-left px-3 py-2 bg-transparent border border-gray-700/50 rounded-lg hover:border-gray-600 transition-colors text-gray-400 hover:text-white"
+                >
+                  <span className="text-xs font-medium">{question}</span>
+                </button>
+              ))}
             </div>
           </div>
-        ) : (
-          <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
-              >
-                {message.type === "user" ? (
-                  <UserMessage
-                    message={message}
-                    onCopy={copyToClipboard}
-                    onEdit={handleEditMessage}
-                  />
-                ) : (
-                  <div className="max-w-2xl w-full">
-                    <AgentMessage message={message} onCopy={copyToClipboard} />
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {isTyping && (
-              <div className="flex justify-start">
-                <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
-                  <div className="flex items-center space-x-3">
-                    <div className="flex items-center space-x-1">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" />
-                      <div
-                        className="w-2 h-2 bg-pink-400 rounded-full animate-bounce"
-                        style={{ animationDelay: "0.1s" }}
-                      />
-                      <div
-                        className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"
-                        style={{ animationDelay: "0.2s" }}
-                      />
-                    </div>
-                    <span className="text-sm text-gray-400">
-                      ChenPilot is thinking...
-                    </span>
-                  </div>
+        </div>
+      ) : (
+        <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex ${message.type === "user" ? "justify-end" : "justify-start"}`}
+            >
+              {message.type === "user" ? (
+                <UserMessage
+                  message={message}
+                  onCopy={copyToClipboard}
+                  onEdit={handleEditMessage}
+                />
+              ) : (
+                <div className="max-w-2xl w-full">
+                  <AgentMessage message={message} onCopy={copyToClipboard} />
                 </div>
+              )}
+            </div>
+          ))}
+
+          {isTyping && (
+            <div className="flex justify-start">
+              <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
+                <div className="flex items-center space-x-3">
+                  <div className="flex items-center space-x-1">
+                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" />
+                    <div
+                      className="w-2 h-2 bg-pink-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "0.1s" }}
+                    />
+                    <div
+                      className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "0.2s" }}
+                    />
+                  </div>
+                  <span className="text-sm text-gray-400">
+                    ChenPilot is thinking...
+                  </span>
+                </div>
+              </div>
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -721,19 +727,19 @@ onClick={() =>
         </div>
 
         {messages.length > 0 && (
-          <div className="relative z-10 border-t border-gray-800/50 bg-[#0F0F23]/80 backdrop-blur-xl">
-            {renderInput(true)}
-          </div>
-        )}
-      </div>
-
-      {messages.length > 0 && (
         <div className="relative z-10 border-t border-gray-800/50 bg-[#0F0F23]/80 backdrop-blur-xl">
           {renderInput(true)}
         </div>
       )}
+    </div>
 
-      <style jsx>{`
+    {messages.length > 0 && (
+      <div className="relative z-10 border-t border-gray-800/50 bg-[#0F0F23]/80 backdrop-blur-xl">
+        {renderInput(true)}
+      </div>
+    )}
+
+    <style jsx>{`
         @keyframes slide-up {
           0% {
             transform: translateY(10px);
@@ -748,8 +754,8 @@ onClick={() =>
           animation: slide-up 0.2s ease-out;
         }
       `}</style>
-    </div>
-  );
+  </div>
+);
 };
 
 export default ChatEngine;

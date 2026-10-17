@@ -55,6 +55,34 @@ const initialState: ChatState = {
   optimisticUpdates: new Map(),
 };
 
+const DEFAULT_CONVERSATION_TITLE = "New Chat";
+
+export const generateConversationTitle = (content: unknown): string => {
+  if (typeof content !== "string") return DEFAULT_CONVERSATION_TITLE;
+
+  const normalized = content.trim().replace(/\s+/g, " ");
+  if (!normalized) return DEFAULT_CONVERSATION_TITLE;
+
+  const characters = Array.from(normalized);
+  return characters.length > 60
+    ? `${characters.slice(0, 57).join("")}...`
+    : normalized;
+};
+
+const isUntitledConversation = (conversation: Conversation): boolean =>
+  !conversation.title?.trim() || conversation.title === DEFAULT_CONVERSATION_TITLE;
+
+const titleConversationFromMessage = (
+  conversation: Conversation | null,
+  message: ChatMessage,
+): Conversation | null => {
+  if (!conversation || message.type !== "user" || !isUntitledConversation(conversation)) {
+    return conversation;
+  }
+
+  return { ...conversation, title: generateConversationTitle(message.content) };
+};
+
 // Async thunks
 // Removed server-side conversation thunks - now handled client-side
 
@@ -156,7 +184,7 @@ export type SendMessageArg = string | { query: string; tempId?: string; clientTi
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, dispatch }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -185,6 +213,14 @@ export const sendMessage = createAsyncThunk(
           messageCount: 0,
         };
       }
+
+      conversation = titleConversationFromMessage(conversation, {
+        id: tempId,
+        type: "user",
+        content: query,
+        timestamp: new Date(clientTimestamp).toISOString(),
+      }) as Conversation;
+      dispatch(setCurrentConversation(conversation));
 
       // Generate server timestamp (should come from server in production)
       const serverTimestamp = new Date().toISOString();
@@ -226,12 +262,12 @@ export const sendMessage = createAsyncThunk(
       }
 
       // Extract server timestamp from response if available
-      const rawServerTimestamp = (response.result as any).serverTimestamp 
-        || (response.result as any).timestamp 
-        || (response as any).serverTimestamp 
-        || (response as any).timestamp 
+      const rawServerTimestamp = (response.result as any).serverTimestamp
+        || (response.result as any).timestamp
+        || (response as any).serverTimestamp
+        || (response as any).timestamp
         || Date.now();
-      
+
       const serverTimestamp = typeof rawServerTimestamp === 'string' && isNaN(Number(rawServerTimestamp))
         ? new Date(rawServerTimestamp).getTime()
         : Number(rawServerTimestamp);
@@ -264,7 +300,7 @@ export const sendMessage = createAsyncThunk(
           success: response.result.success,
           error: response.result.error,
           executionTrace: response.result.executionTrace,
-serverTimestamp: serverTimestamp,
+          serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
           rawData: typeof content !== "string" ? content : undefined,
         }
@@ -382,6 +418,10 @@ const chatSlice = createSlice({
     addMessage: (state, action: PayloadAction<ChatMessage>) => {
       state.messages.push(action.payload);
       state.messages = sortMessagesChronologically(state.messages);
+      state.currentConversation = titleConversationFromMessage(
+        state.currentConversation,
+        action.payload,
+      );
     },
     addUserMessage: (state, action: PayloadAction<string>) => {
       const userMessage: ChatMessage = {
@@ -393,6 +433,10 @@ const chatSlice = createSlice({
       };
       state.messages.push(userMessage);
       state.messages = sortMessagesChronologically(state.messages);
+      state.currentConversation = titleConversationFromMessage(
+        state.currentConversation,
+        userMessage,
+      );
     },
     addSystemMessage: (
       state,
@@ -435,7 +479,7 @@ const chatSlice = createSlice({
         (msg) => msg.id === action.payload.id,
       );
       if (index !== -1) {
-state.messages[index] = {
+        state.messages[index] = {
           ...state.messages[index],
           ...action.payload.updates,
         };
@@ -550,7 +594,22 @@ state.messages[index] = {
       if (typeof window !== "undefined") {
         try {
           const conversations = JSON.parse(localStorage.getItem("conversations") || "[]");
-          state.conversations = Array.isArray(conversations) ? conversations : [];
+          const history = JSON.parse(localStorage.getItem("chat_history") || "{}");
+          state.conversations = Array.isArray(conversations)
+            ? conversations.map((conversation: Conversation) => {
+              const messages = conversation.messages || history[conversation.id] || [];
+              const firstUserMessage = messages.find(
+                (message: ChatMessage) => message.type === "user",
+              );
+              return isUntitledConversation(conversation) && firstUserMessage
+                ? {
+                  ...conversation,
+                  title: generateConversationTitle(firstUserMessage.content),
+                }
+                : conversation;
+            })
+            : [];
+          localStorage.setItem("conversations", JSON.stringify(state.conversations));
         } catch {
           state.conversations = [];
         }
@@ -780,7 +839,15 @@ state.messages[index] = {
       .addCase(sendMessage.fulfilled, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
-        state.currentConversation = action.payload.conversation;
+        const currentConversation = state.currentConversation;
+        state.currentConversation = currentConversation?.id === action.payload.conversation.id
+          ? {
+            ...action.payload.conversation,
+            title: isUntitledConversation(currentConversation)
+              ? action.payload.conversation.title
+              : currentConversation.title,
+          }
+          : action.payload.conversation;
 
         // Debug logging to see what the server is returning
         logger.debug("[ChatSlice] Full response:", action.payload.response);
@@ -864,7 +931,7 @@ state.messages[index] = {
         state.isTyping = false;
         state.error = action.payload as string;
 
-const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
+        const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId
           : `msg_optimistic_${action.meta.requestId}`;
 
@@ -900,14 +967,14 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
         }
 
         const errorMessage: ChatMessage = {
-id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: "agent",
           content: friendlyMessage,
           timestamp: new Date().toISOString(),
           serverTimestamp: Date.now(),
           metadata: {
             success: false,
-type: "error",
+            type: "error",
             status: "failed",
             error: errorContent,
           },
