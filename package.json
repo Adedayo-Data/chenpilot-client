@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack --port 3000",
-    "build": "next build --turbopack",
+    "build": "npm run typecheck && next build --turbopack",
     "start": "next start --port 3000",
     "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
+    "lint:fix": "eslint . --ext .ts,.tsx,.js,.jsx --fix",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "prepare": "husky"
   },
   "dependencies": {
@@ -44,6 +47,7 @@
     "@types/react-dom": "^19",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
+    "@vitest/coverage-v8": "4.1.10",
     "eslint": "^8.57.1",
     "eslint-config-next": "15.5.4",
     "eslint-plugin-react-hooks": "^6.1.1",

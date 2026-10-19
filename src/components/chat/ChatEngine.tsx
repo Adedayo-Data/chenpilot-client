@@ -21,18 +21,15 @@ import {
   Send,
   Mic,
   Square,
-  Zap,
-  DollarSign,
-  Bitcoin,
-  Building2,
   Sun,
-  CheckCircle,
   Clock,
   Copy,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { ChatMessage } from "@/types";
 import { usePathname, useRouter } from "next/navigation";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
+import { AgentToolsMenu } from "@/components/chat/AgentToolsMenu";
 
 // ─── Speech Recognition ambient types (used by the old transcription path) ────
 
@@ -91,6 +88,7 @@ function formatSeconds(secs: number): string {
 export const ChatEngine: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const prefersReducedMotion = useReducedMotion();
   const dispatch = useAppDispatch();
   const { user } = useAppSelector((state) => state.auth);
   const {
@@ -105,7 +103,6 @@ export const ChatEngine: React.FC = () => {
   const [inputValue, setInputValue] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [showTools, setShowTools] = useState(false);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [speechResult, setSpeechResult] = useState("");
   const [isListening, setIsListening] = useState(false);
@@ -155,8 +152,8 @@ export const ChatEngine: React.FC = () => {
 
   // ── Effects ───────────────────────────────────────────────────────────────
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping, voiceStatus]);
+    messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
+  }, [messages, isTyping, voiceStatus, prefersReducedMotion]);
 
   useEffect(() => {
     if (currentConversation && messages.length > 0) {
@@ -279,7 +276,7 @@ export const ChatEngine: React.FC = () => {
   }, []);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
   };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -374,25 +371,6 @@ export const ChatEngine: React.FC = () => {
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
-
-  const agentTools = [
-    { name: "Soroswap", description: "Stellar DEX for token swaps", icon: Zap },
-    {
-      name: "Blend",
-      description: "Lending and borrowing protocol",
-      icon: DollarSign,
-    },
-    {
-      name: "Aquarius",
-      description: "Liquidity pool management",
-      icon: Bitcoin,
-    },
-    {
-      name: "Phoenix",
-      description: "Advanced DeFi operations",
-      icon: Building2,
-    },
-  ];
 
   // ── Recording overlay (shown inside the input box while recording) ─────────
   const renderRecordingOverlay = () => {
@@ -492,22 +470,10 @@ export const ChatEngine: React.FC = () => {
         <div className="flex items-center justify-between">
           {/* Tools picker */}
           <div className="flex items-center space-x-3">
-            <button
-              type="button"
-              onClick={() => setShowTools(!showTools)}
-              className={`flex items-center space-x-2 px-4 py-2 text-sm rounded-lg transition-colors ${selectedTool
-                  ? "text-purple-300 bg-purple-600/20 border border-purple-500/30"
-                  : "text-gray-400 hover:bg-gray-800/50 hover:text-white"
-                }`}
-            >
-              <span className="text-lg">+</span>
-              <span>Tools</span>
-              {selectedTool && (
-                <span className="text-xs bg-purple-500/30 px-2 py-0.5 rounded-full ml-1">
-                  {selectedTool}
-                </span>
-              )}
-            </button>
+            <AgentToolsMenu
+              selectedTool={selectedTool}
+              onSelect={setSelectedTool}
+            />
             <TagWidget />
           </div>
 
@@ -518,10 +484,10 @@ export const ChatEngine: React.FC = () => {
             }
             disabled={isChatLoading || isTyping}
             className={`p-3 rounded-lg transition-colors ${isRecording
-                ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                : inputValue.trim()
-                  ? "bg-purple-600 text-white hover:bg-purple-700"
-                  : "text-gray-400 hover:bg-gray-800/50 hover:text-white"
+              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+              : inputValue.trim()
+                ? "bg-purple-600 text-white hover:bg-purple-700"
+                : "text-gray-400 hover:bg-gray-800/50 hover:text-white"
               }`}
           >
             {isRecording ? (
@@ -595,45 +561,6 @@ export const ChatEngine: React.FC = () => {
         </div>
       </div>
 
-      {showTools && (
-        <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden z-20">
-          <div className="py-1">
-            {agentTools.map((tool, index) => {
-              const IconComponent = tool.icon;
-              const isSelected = selectedTool === tool.name;
-              return (
-                <button
-                  key={index}
-                  onClick={() => handleToolSelect(tool.name)}
-                  className={`w-full flex items-center space-x-3 px-4 py-3 hover:bg-gray-800 transition-colors text-left ${isSelected
-                      ? "bg-purple-600/10 border-l-2 border-purple-500"
-                      : ""
-                    }`}
-                >
-                  <div
-                    className={`${isSelected ? "text-purple-400" : "text-gray-400"}`}
-                  >
-                    <IconComponent className="h-4 w-4" />
-                  </div>
-                  <div className="flex-1">
-                    <div
-                      className={`text-sm font-medium ${isSelected ? "text-purple-300" : "text-white"}`}
-                    >
-                      {tool.name}
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {tool.description}
-                    </div>
-                  </div>
-                  {isSelected && (
-                    <CheckCircle className="h-4 w-4 text-purple-400" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
     </div >
   );
@@ -705,13 +632,13 @@ return (
               <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
                 <div className="flex items-center space-x-3">
                   <div className="flex items-center space-x-1">
-                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" />
+                    <div className={`w-2 h-2 bg-purple-400 rounded-full ${prefersReducedMotion ? "" : "animate-bounce"}`} />
                     <div
-                      className="w-2 h-2 bg-pink-400 rounded-full animate-bounce"
+                      className={`w-2 h-2 bg-pink-400 rounded-full ${prefersReducedMotion ? "" : "animate-bounce"}`}
                       style={{ animationDelay: "0.1s" }}
                     />
                     <div
-                      className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"
+                      className={`w-2 h-2 bg-purple-400 rounded-full ${prefersReducedMotion ? "" : "animate-bounce"}`}
                       style={{ animationDelay: "0.2s" }}
                     />
                   </div>
@@ -756,6 +683,95 @@ return (
       `}</style>
   </div>
 );
+
+export const ChatEngine: React.FC<ChatEngineProps> = ({
+  messages,
+  targetMessageId,
+  onLoadMoreHistory,
+  isFetchingHistory,
+}) => {
+  const prefersReducedMotion = useReducedMotion();
+  const parentRef = useRef<HTMLDivElement>(null);
+  const isShortList = messages.length <= SMALL_LIST_THRESHOLD;
+
+  // Initialize virtualizer
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 72, // Average initial message height estimate
+    overscan: 5,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  // Scroll to bottom on new incoming messages if near bottom
+  const scrollToBottom = useCallback(() => {
+    if (messages.length > 0) {
+      rowVirtualizer.scrollToIndex(messages.length - 1, {
+        align: 'end',
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+      });
+    }
+  }, [messages.length, rowVirtualizer]);
+
+  // Handle target message navigation (Search jump)
+  useEffect(() => {
+    if (targetMessageId) {
+      const targetIndex = messages.findIndex((m) => m.id === targetMessageId);
+      if (targetIndex !== -1) {
+        rowVirtualizer.scrollToIndex(targetIndex, {
+          align: 'center',
+          behavior: prefersReducedMotion ? 'auto' : 'smooth',
+        });
+      }
+    }
+  }, [targetMessageId, messages, rowVirtualizer]);
+
+  return (
+    <div
+      ref={parentRef}
+      className="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar relative"
+      style={{ contain: 'strict' }}
+    >
+      {isShortList ? (
+        /* Fallback for short conversations: standard un-virtualized DOM */
+        <div className="flex flex-col space-y-4">
+          {messages.map((message) => (
+            <MessageRow key={message.id} message={message} />
+          ))}
+        </div>
+      ) : (
+        /* Virtualized rendering for long conversations */
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {virtualItems.map((virtualRow) => {
+            const message = messages[virtualRow.index];
+            return (
+              <div
+                key={message.id || virtualRow.key}
+                ref={rowVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                <MessageRow message={message} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default ChatEngine;
