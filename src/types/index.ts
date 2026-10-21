@@ -87,7 +87,7 @@ export interface Contact {
   id: string;
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  tokenType: TokenType;
   createdAt: string;
   updatedAt: string;
   avatar?: string;
@@ -98,13 +98,13 @@ export interface Contact {
 export interface CreateContactRequest {
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType: TokenType;
 }
 
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
-  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType?: TokenType;
 }
 
 // Balance and Wallet Types
@@ -441,7 +441,17 @@ export interface CardProps {
 }
 
 // Utility Types
-export type TokenType = "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+
+/**
+ * Canonical list of tokens supported by both the payment and contact systems.
+ * This is the single source of truth; add tokens here and they propagate
+ * everywhere automatically.  The value order controls the dropdown order.
+ */
+export const SUPPORTED_ASSETS = ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'] as const;
+
+/** Union type derived from SUPPORTED_ASSETS — do not list values separately. */
+export type TokenType = typeof SUPPORTED_ASSETS[number];
+
 export type AuthProvider = "email" | "google";
 export type MessageType = "user" | "agent" | "system";
 export type NotificationType = "success" | "error" | "warning" | "info";
@@ -583,7 +593,7 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: TokenType;
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
   recipientContactId?: string; // Optional reference to selected contact
@@ -600,7 +610,7 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: TokenType;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;
@@ -619,14 +629,14 @@ export interface ContactPickerProps {
   onClose: () => void;
   isOpen: boolean;
   isLoading?: boolean;
-  tokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType?: TokenType;
 }
 
 export interface PaymentLimits {
   minAmount: number;
   maxAmount: number;
   maxMemoLength: number;
-  supportedTokens: TokenType[];
+  supportedTokens: readonly TokenType[];
 }
 
 export interface PaymentFeeEstimate {

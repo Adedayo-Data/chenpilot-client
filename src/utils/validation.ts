@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { VALIDATION_MESSAGES, PAYMENT_LIMITS, SECURITY_VALIDATION } from '@/constants';
+import { SUPPORTED_ASSETS } from '@/types';
 
 // Email validation schema
 export const emailSchema = z
@@ -41,15 +42,18 @@ export const tokenAmountSchema = z
 export const createContactSchema = z.object({
   name: nameSchema,
   address: stellarAddressSchema,
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH'], {
+  tokenType: z.enum(SUPPORTED_ASSETS, {
     required_error: 'Please select a token type',
+    invalid_type_error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
   }),
 });
 
 export const updateContactSchema = z.object({
   name: nameSchema.optional(),
   address: stellarAddressSchema.optional(),
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH']).optional(),
+  tokenType: z.enum(SUPPORTED_ASSETS, {
+    invalid_type_error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
+  }).optional(),
 });
 
 // Authentication schemas
@@ -106,8 +110,9 @@ export const sendPaymentSchema = z.object({
     .refine((val) => parseFloat(val) > 0, VALIDATION_MESSAGES.AMOUNT_MUST_BE_POSITIVE)
     .refine((val) => parseFloat(val) >= PAYMENT_LIMITS.MIN_AMOUNT, VALIDATION_MESSAGES.AMOUNT_EXCEEDS_MIN)
     .refine((val) => parseFloat(val) <= PAYMENT_LIMITS.MAX_AMOUNT, VALIDATION_MESSAGES.AMOUNT_EXCEEDS_MAX),
-  tokenType: z.enum(PAYMENT_LIMITS.SUPPORTED_TOKENS, {
+  tokenType: z.enum(SUPPORTED_ASSETS, {
     required_error: VALIDATION_MESSAGES.TOKEN_TYPE_REQUIRED,
+    invalid_type_error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
   }),
   memo: z
     .string()

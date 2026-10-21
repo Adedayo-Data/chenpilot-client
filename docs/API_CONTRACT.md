@@ -91,7 +91,7 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 
 ## Contacts Endpoints
 
-`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.
+`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create and update accept `tokenType` from the canonical set `XLM | USDC | USDT | BTC | ETH | AQUA`, which is defined once in `SUPPORTED_ASSETS` (`src/types/index.ts`) and shared by the contact editor, send form, contact picker, and Zod schemas. Passing a legacy value not in that set (e.g. `STRK`, `DAI`) will be rejected by the client's Zod schema with an actionable error message listing the supported tokens before the request reaches the server.
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
@@ -109,6 +109,18 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /liquidity` | `{"sortBy":"liquidity","sortOrder":"desc","limit":10}` | `{"success":true,"data":{"totalPools":1,"totalLiquidity":"100000","totalVolume24h":"5000","averageAPR":0.12,"activePools":1,"topPools":[],"networkMetrics":{"gasPrice":"1","blockNumber":123,"timestamp":"2026-01-01T00:00:00Z"}}}` | `LiquidityPoolStats` widget; errors show a generic inline message. |
 
 `topPools` items use `LiquidityPool`: pool id/name, token1/token2 metadata, reserve and liquidity strings, APR, 24-hour volume, fee, active flag, and `created_at`.
+
+## Payment Endpoint
+
+`SendPaymentRequest` fields: `recipientAddress` (Stellar G-address, required), `amount` (string, required), `tokenType` (one of `XLM | USDC | USDT | BTC | ETH | AQUA`, required), `memo` (string, optional, max 28 chars), `memoType` (`none | text | id | hash`, optional), `recipientContactId` (string, optional).
+
+The client normalises and validates the payload using `sendPaymentSchema` (Zod) before sending. The server is the authoritative gate for balance, authorisation, and duplicate-submission checks. Never rely on client-side validation as a security boundary.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /payments/send` | `{"recipientAddress":"G...","amount":"10","tokenType":"XLM","memoType":"text","memo":"rent"}` | `{"success":true,"data":{"transactionHash":"abc123","status":"success"}}` | Send page; shows a loading toast while in-flight, success toast with redirect to `/transactions` on success, or an error toast on failure. Payload logging and simulated delay have been removed — only the backend-confirmed result is surfaced to the user. |
+
+Self-transfer behaviour: the client compares `recipientAddress` (normalised) against `state.auth.user.address` and surfaces a field-level warning with an acknowledgement checkbox. This is a UX guard only. The backend must independently decide whether to allow or reject self-transfers.
 
 ## Browser Security And CSP Reports
 

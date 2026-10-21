@@ -9,36 +9,48 @@ import SendPaymentForm from '@/components/payment/SendPaymentForm';
 import { SendPaymentRequest } from '@/types';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import apiService from '@/services/api';
 import toast from 'react-hot-toast';
 
 export default function SendPaymentPage() {
   const router = useRouter();
   const dispatch = useAppDispatch();
-  const { isAuthenticated } = useAppSelector((state) => state.auth);
-  const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
+  const { isAuthenticated, user } = useAppSelector((state) => state.auth);
+  const { list: contacts, isLoading: contactsLoading } = useAppSelector(
+    (state) => state.contacts,
+  );
 
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/auth/login');
       return;
     }
-
     dispatch(getContacts());
   }, [dispatch, isAuthenticated, router]);
 
   const handleSendPayment = async (data: SendPaymentRequest) => {
+    // NOTE: the self-transfer comparison in SendPaymentForm is a UX hint only.
+    // Server-side authorisation and balance checks are the authoritative gate.
+    const toastId = toast.loading('Sending payment…');
     try {
-      // In a real implementation, this would call the payment API
-      console.log('Sending payment:', data);
-      
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
-      toast.success('Payment sent successfully!');
-      router.push('/transactions');
-    } catch (error: any) {
-      console.error('Payment error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      const response = await apiService.sendPayment(data);
+
+      if (response.success) {
+        toast.success('Payment sent successfully!', { id: toastId });
+        router.push('/transactions');
+      } else {
+        toast.error(
+          (response as { message?: string }).message || 'Payment failed. Please try again.',
+          { id: toastId },
+        );
+      }
+    } catch (error: unknown) {
+      const message =
+        (error as { response?: { data?: { message?: string } }; message?: string })
+          ?.response?.data?.message ||
+        (error as { message?: string })?.message ||
+        'Failed to send payment';
+      toast.error(message, { id: toastId });
     }
   };
 
@@ -66,8 +78,9 @@ export default function SendPaymentPage() {
                   size="sm"
                   onClick={() => router.back()}
                   className="text-gray-400 hover:text-white"
+                  aria-label="Go back"
                 >
-                  <ArrowLeft className="h-4 w-4" />
+                  <ArrowLeft className="h-4 w-4" aria-hidden="true" />
                 </Button>
                 <div>
                   <h1 className="text-2xl font-bold">Send Payment</h1>
@@ -77,10 +90,8 @@ export default function SendPaymentPage() {
                 </div>
               </div>
               <div className="flex items-center space-x-2 bg-blue-500/10 px-3 py-1.5 rounded-full border border-blue-500/30">
-                <Shield className="h-4 w-4 text-blue-400" />
-                <span className="text-xs font-medium text-blue-300">
-                  Secure
-                </span>
+                <Shield className="h-4 w-4 text-blue-400" aria-hidden="true" />
+                <span className="text-xs font-medium text-blue-300">Secure</span>
               </div>
             </div>
           </div>
@@ -93,6 +104,9 @@ export default function SendPaymentPage() {
               onSubmit={handleSendPayment}
               contacts={contacts}
               isLoading={contactsLoading}
+              // Pass the sender's address so the form can warn about
+              // accidental self-transfers.  This is a UX guard only.
+              senderAddress={user?.address}
             />
           </div>
         </div>
