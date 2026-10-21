@@ -29,6 +29,7 @@ import { ChatMessage } from "@/types";
 import { usePathname, useRouter } from "next/navigation";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { AgentToolsMenu } from "@/components/chat/AgentToolsMenu";
+import { ChatDraftComposer } from "@/components/chat/ChatDraftComposer";
 
 // ─── Speech Recognition ambient types (used by the old transcription path) ────
 
@@ -424,19 +425,16 @@ export const ChatEngine: React.FC = () => {
       className={`w-full ${isSticky ? "max-w-4xl mx-auto px-4 py-6" : "max-w-3xl mb-8"}`}
     >
       <div className="relative bg-[#1A1A2E] rounded-2xl p-6 border border-gray-800/50 shadow-xl">
-        <input
-          ref={inputRef}
+        <ChatDraftComposer
+          inputRef={inputRef}
+          conversationId={currentConversation?.id ?? null}
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSendMessage();
-            }
+          onChange={setInputValue}
+          onEnter={() => {
+            void handleSendMessage();
           }}
           placeholder={isRecording ? "Listening..." : "Ask ChenPilot..."}
           disabled={isRecording}
-          className="w-full bg-transparent border-none text-white placeholder:text-gray-500 focus:outline-none text-lg mb-4"
         />
 
         {isRecording && (

@@ -185,3 +185,77 @@ export function truncateText(text: string, maxLength: number, suffix: string = '
   }
   return text.slice(0, maxLength - suffix.length) + suffix;
 }
+
+export const CHAT_DRAFTS_STORAGE_KEY = "chat_drafts_v1";
+export const CHAT_DRAFT_LIMIT = 20;
+
+export interface StoredChatDraft {
+  text: string;
+  updatedAt: number;
+}
+
+export type ChatDraftMap = Record<string, StoredChatDraft>;
+
+function isStoredChatDraft(value: unknown): value is StoredChatDraft {
+  if (!value || typeof value !== "object") return false;
+  const draft = value as { text?: unknown; updatedAt?: unknown };
+  return typeof draft.text === "string" && typeof draft.updatedAt === "number";
+}
+
+export function readChatDrafts(): ChatDraftMap {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(CHAT_DRAFTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const drafts: ChatDraftMap = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (isStoredChatDraft(value)) drafts[id] = value;
+    }
+    return drafts;
+  } catch {
+    return {};
+  }
+}
+
+export function pruneChatDrafts(
+  drafts: ChatDraftMap,
+  activeId?: string | null,
+  limit: number = CHAT_DRAFT_LIMIT,
+): ChatDraftMap {
+  const recent = Object.entries(drafts)
+    .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+    .slice(0, limit);
+  const kept = Object.fromEntries(recent) as ChatDraftMap;
+  if (activeId && drafts[activeId] && !kept[activeId]) {
+    kept[activeId] = drafts[activeId];
+  }
+  return kept;
+}
+
+export function writeChatDrafts(drafts: ChatDraftMap): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(CHAT_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+export function getChatDraft(conversationId: string): string {
+  return readChatDrafts()[conversationId]?.text ?? "";
+}
+
+export function setChatDraft(conversationId: string, text: string, now: number = Date.now()): void {
+  const drafts = readChatDrafts();
+  if (!text) {
+    delete drafts[conversationId];
+  } else {
+    drafts[conversationId] = { text, updatedAt: now };
+  }
+  writeChatDrafts(pruneChatDrafts(drafts, conversationId));
+}
+
+export function clearChatDraft(conversationId: string): void {
+  const drafts = readChatDrafts();
+  if (!(conversationId in drafts)) return;
+  delete drafts[conversationId];
+  writeChatDrafts(drafts);
+}

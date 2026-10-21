@@ -261,6 +261,8 @@ export interface Conversation {
   messageCount: number;
   messages?: ChatMessage[];
   tags?: string[];
+  pinned?: boolean;
+  pinnedAt?: string;
 }
 
 export interface ConversationTag {

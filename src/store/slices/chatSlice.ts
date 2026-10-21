@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { logger } from "../../utils/logger";
+import { clearChatDraft } from "../../utils/format";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
@@ -185,17 +186,6 @@ export const sendMessage = createAsyncThunk(
           messageCount: 0,
         };
       }
-
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
 
       // Call the API service to get actual response
       const response = await apiService.queryAgent({ userId, query });
@@ -645,6 +635,27 @@ state.messages[index] = {
     setSelectedTags: (state, action: PayloadAction<string[]>) => {
       state.selectedTags = action.payload;
     },
+    toggleConversationPin: (state, action: PayloadAction<string>) => {
+      const conversation = state.conversations.find((item) => item.id === action.payload);
+      if (!conversation) return;
+      const nextPinned = !conversation.pinned;
+      conversation.pinned = nextPinned;
+      conversation.pinnedAt = nextPinned ? new Date().toISOString() : undefined;
+      if (typeof window !== "undefined") {
+        try {
+          const stored = JSON.parse(localStorage.getItem("conversations") || "[]");
+          const conversations = Array.isArray(stored) ? stored : [];
+          const index = conversations.findIndex(
+            (item: Conversation) => item.id === conversation.id,
+          );
+          if (index >= 0) conversations[index] = conversation;
+          else conversations.unshift(conversation);
+          localStorage.setItem("conversations", JSON.stringify(conversations));
+        } catch {
+          localStorage.setItem("conversations", JSON.stringify(state.conversations));
+        }
+      }
+    },
     setOnlineStatus: (state, action: PayloadAction<boolean>) => {
       state.isOnline = action.payload;
     },
@@ -781,6 +792,9 @@ state.messages[index] = {
         state.isLoading = false;
         state.isTyping = false;
         state.currentConversation = action.payload.conversation;
+        if (action.payload.conversation?.id) {
+          clearChatDraft(action.payload.conversation.id);
+        }
 
         // Debug logging to see what the server is returning
         logger.debug("[ChatSlice] Full response:", action.payload.response);
@@ -972,6 +986,7 @@ export const {
   addTag,
   removeTag,
   setSelectedTags,
+  toggleConversationPin,
   setOnlineStatus,
   queueMessage,
   dequeueMessage,

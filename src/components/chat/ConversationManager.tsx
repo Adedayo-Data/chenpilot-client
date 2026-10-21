@@ -2,9 +2,9 @@
 
 import React, { useState, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store';
-import { addTag, removeTag, setSelectedTags } from '@/store/slices/chatSlice';
+import { addTag, removeTag, setSelectedTags, toggleConversationPin } from '@/store/slices/chatSlice';
 import { Conversation } from '@/types';
-import { X, Plus, Tag } from 'lucide-react';
+import { X, Plus, Tag, Star } from 'lucide-react';
 
 interface ConversationManagerProps {
   onSelectConversation?: (conversation: Conversation) => void;
@@ -27,10 +27,18 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
 
   // Filter conversations by selected tags
   const filteredConversations = useMemo(() => {
-    if (selectedTags.length === 0) return conversations;
-    return conversations.filter(conv =>
-      selectedTags.some(tag => conv.tags?.includes(tag))
-    );
+    const matching = selectedTags.length === 0
+      ? conversations
+      : conversations.filter(conv =>
+        selectedTags.some(tag => conv.tags?.includes(tag))
+      );
+    return [...matching].sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+      if (a.pinned && b.pinned) {
+        return new Date(b.pinnedAt ?? b.updatedAt).getTime() - new Date(a.pinnedAt ?? a.updatedAt).getTime();
+      }
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
   }, [conversations, selectedTags]);
 
   const handleAddTag = (conversationId: string, tag: string) => {
@@ -108,6 +116,15 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
                       {conversation.title}
                     </h4>
                     <p className="text-xs text-gray-500 mt-0.5">{conversation.messageCount} messages</p>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={conversation.pinned ? `Unpin ${conversation.title}` : `Pin ${conversation.title}`}
+                    aria-pressed={Boolean(conversation.pinned)}
+                    onClick={() => dispatch(toggleConversationPin(conversation.id))}
+                    className="ml-2 rounded p-1 text-gray-400 hover:text-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                  >
+                    <Star className={`h-4 w-4 ${conversation.pinned ? "fill-amber-300 text-amber-300" : ""}`} />
                   </button>
                 </div>
 
