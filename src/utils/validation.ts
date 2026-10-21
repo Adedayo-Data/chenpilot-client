@@ -111,26 +111,36 @@ export const sendPaymentSchema = z.object({
   }),
   memo: z
     .string()
-    .max(PAYMENT_LIMITS.MAX_MEMO_LENGTH, VALIDATION_MESSAGES.MEMO_TOO_LONG)
+    .max(64, VALIDATION_MESSAGES.MEMO_TOO_LONG)
     .optional(),
   memoType: z.enum(PAYMENT_LIMITS.MEMO_TYPES).optional(),
   recipientContactId: z.string().optional(),
 }).refine((data) => {
-  // If memo is provided, memoType must be specified (except for 'none')
-  if (data.memo && data.memo.length > 0 && !data.memoType) {
-    return false;
+  // If memo is provided, memoType must be specified and cannot be 'none'
+  if (data.memo && data.memo.length > 0) {
+    if (!data.memoType || data.memoType === 'none') {
+      return false;
+    }
   }
   return true;
 }, {
   message: VALIDATION_MESSAGES.MEMO_TYPE_REQUIRED,
   path: ['memoType'],
 }).refine((data) => {
-  // Validate memo format based on type
-  if (data.memo && data.memoType === 'id') {
-    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(data.memo);
-  }
-  if (data.memo && data.memoType === 'hash') {
-    return SECURITY_VALIDATION.MEMO_HASH_REGEX.test(data.memo);
+  // Validate memo length and format based on type
+  if (data.memo && data.memo.length > 0) {
+    if (data.memoType === 'text') {
+      return data.memo.length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH;
+    }
+    if (data.memoType === 'id') {
+      return (
+        data.memo.length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH &&
+        SECURITY_VALIDATION.MEMO_ID_REGEX.test(data.memo)
+      );
+    }
+    if (data.memoType === 'hash') {
+      return SECURITY_VALIDATION.MEMO_HASH_REGEX.test(data.memo);
+    }
   }
   return true;
 }, {
