@@ -87,18 +87,46 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `GET /auth/funding/auto-funding-stats` | No body. | `{"success":true,"data":{"totalFunded":10,"totalAccounts":8,"averageAmount":"5.25"}}` | Service method only; stats thunk currently returns mock data. |
 | `GET /auth/funding/funded-account-balance` | No body. | `{"success":true,"data":{"balance":"10","hasBalance":true}}` | Service method only; no direct screen caller found. |
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
-| `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
+| `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[{"id":"tx1","hash":"abc...","ledger":123,"created_at":"2026-01-01T00:00:00Z","source_account":"G...","fee_charged":"100","operation_count":1,"successful":true,"operations":[],"memo":"invoice-42","memo_type":"text"}],"total":1,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. `memo` and `memo_type` are optional. `memo_type` may be `text`, `id`, `hash`, or `return`. The transactions page renders the memo below operations with a type badge; values longer than 40 characters are truncated in the UI with the full value accessible via the element's `title` attribute. |
 
 ## Contacts Endpoints
 
-`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.
+`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed?, defaultMemo?, defaultMemoType? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally. Both create and update also accept the optional memo-preset fields `defaultMemo` (string) and `defaultMemoType` (`none | text | id | hash`). When `defaultMemoType` is `none` or absent, `defaultMemo` is ignored.
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow is present, but its current Redux thunks return mock data and do not call this method. |
-| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
+| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page; Redux slice calls this endpoint. 404 returns an empty-array success fallback. |
+| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM","defaultMemo":"inv-42","defaultMemoType":"text"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","defaultMemo":"inv-42","defaultMemoType":"text","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Create modal; only the targeted create button is disabled while in-flight. 404 returns an explanatory failure envelope. |
+| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace","defaultMemo":"ref-7","defaultMemoType":"id"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","defaultMemo":"ref-7","defaultMemoType":"id","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Edit modal; only the targeted contact's edit button is disabled while in-flight. Form values are preserved on failure so the user can retry. 404 becomes an explanatory failure envelope. |
+| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Delete confirmation; only the targeted contact's delete button is disabled while in-flight. Contact remains in the list on failure with a per-card error message. 404 becomes an explanatory failure envelope. |
+
+### Contact Local Export
+
+The export is entirely client-side; no HTTP request is made and no contact data leaves the device. Clicking the **Export** button on the contacts page triggers a `application/json` browser download in the following format:
+
+```json
+{
+  "format": "chenpilot-contacts-v1",
+  "exportedAt": "2026-10-21T12:00:00.000Z",
+  "contacts": [
+    {
+      "name": "Ada",
+      "address": "G...",
+      "tokenType": "XLM",
+      "defaultMemo": "inv-42",
+      "defaultMemoType": "text",
+      "isFavorite": true,
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+Fields `defaultMemo`, `defaultMemoType`, and `isFavorite` are omitted when absent. Internal server-assigned fields (`id`, `updatedAt`) are never included. The `format` field is a version sentinel for future import support.
+
+### Memo Preset Prefill (Payment Form)
+
+When a contact with `defaultMemo` and a non-`none` `defaultMemoType` is selected in `SendPaymentForm`, those values are pre-filled into the memo fields. The user may edit or clear them before submitting. If a different contact is selected or the contact is cleared, the memo fields are reset to empty / `none`.
 
 ## Liquidity Endpoint
 

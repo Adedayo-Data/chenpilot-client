@@ -60,6 +60,17 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     setSelectedContact(contact);
     setValue('recipientAddress', contact.address);
     setValue('tokenType', contact.tokenType);
+
+    // Prefill memo preset only when the contact carries one.
+    // The user remains free to edit or clear these values before submitting.
+    if (contact.defaultMemo && contact.defaultMemoType && contact.defaultMemoType !== 'none') {
+      setValue('memo', contact.defaultMemo);
+      setValue('memoType', contact.defaultMemoType);
+    } else {
+      setValue('memo', '');
+      setValue('memoType', 'none');
+    }
+
     toast.success(`Selected ${contact.name}`);
   };
 
@@ -138,6 +149,11 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
               <div>
                 <p className="font-medium text-white">{selectedContact.name}</p>
                 <p className="text-xs text-gray-400">{selectedContact.tokenType}</p>
+                {selectedContact.defaultMemo && selectedContact.defaultMemoType && selectedContact.defaultMemoType !== 'none' && (
+                  <p className="text-xs text-blue-300 mt-0.5">
+                    Memo preset applied — you can edit it below
+                  </p>
+                )}
               </div>
             </div>
             <Button
