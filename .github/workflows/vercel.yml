@@ -58,6 +58,11 @@ jobs:
       - name: Build project
         run: pnpm build
 
+      - name: Run Lighthouse CI checks
+        run: pnpm run lighthouse
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
   # Preview deployment for pull requests
   deploy-preview:
     name: Deploy Preview

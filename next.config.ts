@@ -11,6 +11,8 @@ const nextConfig: NextConfig = {
   // Optimize bundle size
   swcMinify: true,
   compress: true,
+  poweredByHeader: false,
+  reactStrictMode: true,
   // Improve production build performance
   productionBrowserSourceMaps: false,
   // Optimize images
