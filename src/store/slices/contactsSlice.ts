@@ -20,65 +20,59 @@ const initialState: ContactsState = {
 export const getContacts = createAsyncThunk(
   'contacts/getContacts',
   async (_, { rejectWithValue }) => {
-    // Mock contacts
-    const mockContacts: Contact[] = [
-      {
-        id: '1',
-        name: 'Mock Contact 1',
-        address: '0x1234567890abcdef',
-        tokenType: 'STRK',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: '2',
-        name: 'Mock Contact 2',
-        address: '0xabcdef1234567890',
-        tokenType: 'ETH',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    ];
-    return mockContacts;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return rejectWithValue('Contacts are unavailable while offline.');
+    }
+
+    const response = await apiService.getContacts();
+    if (!response.success) {
+      return rejectWithValue(response.message);
+    }
+    return response.data;
   }
 );
 
 export const createContact = createAsyncThunk(
   'contacts/createContact',
   async (contactData: CreateContactRequest, { rejectWithValue }) => {
-    // Mock create contact
-    const mockContact: Contact = {
-      id: `mock_${Date.now()}`,
-      name: contactData.name,
-      address: contactData.address,
-      tokenType: contactData.tokenType,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    return mockContact;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return rejectWithValue('Contacts cannot be changed while offline. Your changes are still available to retry.');
+    }
+
+    const response = await apiService.createContact(contactData);
+    if (!response.success) {
+      return rejectWithValue(response.message);
+    }
+    return response.data;
   }
 );
 
 export const updateContact = createAsyncThunk(
   'contacts/updateContact',
   async ({ id, data }: { id: string; data: UpdateContactRequest }, { rejectWithValue }) => {
-    // Mock update contact
-    const mockContact: Contact = {
-      id,
-      name: data.name || 'Updated Contact',
-      address: data.address || '0xupdatedaddress',
-      tokenType: data.tokenType || 'STRK',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    return mockContact;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return rejectWithValue('Contacts cannot be changed while offline. Your changes are still available to retry.');
+    }
+
+    const response = await apiService.updateContact(id, data);
+    if (!response.success) {
+      return rejectWithValue(response.message);
+    }
+    return response.data;
   }
 );
 
 export const deleteContact = createAsyncThunk(
   'contacts/deleteContact',
   async (id: string, { rejectWithValue }) => {
-    // Mock delete contact - always succeed
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return rejectWithValue('Contacts cannot be changed while offline.');
+    }
+
+    const response = await apiService.deleteContact(id);
+    if (!response.success) {
+      return rejectWithValue(response.message);
+    }
     return id;
   }
 );
@@ -96,7 +90,7 @@ const contactsSlice = createSlice({
     clearSelectedContact: (state) => {
       state.selectedContact = null;
     },
-    searchContacts: (state, action: PayloadAction<string>) => {
+    searchContacts: () => {
       // This would typically be handled by a selector, but we can store the search term here
       // The actual filtering would be done in the component or selector
     },

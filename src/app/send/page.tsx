@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
 import { ChatLayout } from '@/components/layout/ChatLayout';
+import { OfflineIndicator } from '@/components/chat/OfflineIndicator';
 import SendPaymentForm from '@/components/payment/SendPaymentForm';
-import { SendPaymentRequest } from '@/types';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import toast from 'react-hot-toast';
@@ -15,6 +15,7 @@ export default function SendPaymentPage() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
+  const isOnline = useAppSelector((state) => state.chat.isOnline);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
 
   useEffect(() => {
@@ -23,22 +24,26 @@ export default function SendPaymentPage() {
       return;
     }
 
-    dispatch(getContacts());
-  }, [dispatch, isAuthenticated, router]);
+    if (isOnline) {
+      dispatch(getContacts());
+    }
+  }, [dispatch, isAuthenticated, isOnline, router]);
 
-  const handleSendPayment = async (data: SendPaymentRequest) => {
+  const handleSendPayment = async () => {
+    if (!isOnline) {
+      throw new Error('Payments cannot be sent while offline. Your payment details are still in the form; retry when connected.');
+    }
+
     try {
       // In a real implementation, this would call the payment API
-      console.log('Sending payment:', data);
-      
+
       // Simulate API call
       await new Promise((resolve) => setTimeout(resolve, 2000));
       
       toast.success('Payment sent successfully!');
       router.push('/transactions');
-    } catch (error: any) {
-      console.error('Payment error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Failed to send payment');
     }
   };
 
@@ -55,6 +60,7 @@ export default function SendPaymentPage() {
 
   return (
     <ChatLayout>
+      <OfflineIndicator />
       <div className="h-full flex flex-col bg-[#060816] text-white overflow-hidden">
         {/* Header */}
         <div className="border-b border-gray-800 bg-[#060816]/80 backdrop-blur-xl">
@@ -93,6 +99,7 @@ export default function SendPaymentPage() {
               onSubmit={handleSendPayment}
               contacts={contacts}
               isLoading={contactsLoading}
+              isOnline={isOnline}
             />
           </div>
         </div>

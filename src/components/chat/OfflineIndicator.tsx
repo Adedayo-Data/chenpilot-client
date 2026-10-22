@@ -3,23 +3,36 @@
 import React, { useEffect } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { setOnlineStatus, loadMessageQueue } from '@/store/slices/chatSlice';
-import { WifiOff, Wifi, AlertCircle } from 'lucide-react';
+import { WifiOff, Wifi } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
 
-export const OfflineIndicator: React.FC = () => {
+interface OfflineIndicatorProps {
+  canRetry?: boolean;
+  onRetry?: () => void;
+}
+
+export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
+  canRetry = false,
+  onRetry,
+}) => {
   const dispatch = useAppDispatch();
   const { isOnline, messageQueue } = useAppSelector((state) => state.chat);
+  const [connectionRestored, setConnectionRestored] = React.useState(false);
 
   useEffect(() => {
     // Load queue on mount
     dispatch(loadMessageQueue());
+    dispatch(setOnlineStatus(navigator.onLine));
 
     // Set up event listeners
     const handleOnline = () => {
       dispatch(setOnlineStatus(true));
+      setConnectionRestored(true);
     };
 
     const handleOffline = () => {
       dispatch(setOnlineStatus(false));
+      setConnectionRestored(false);
     };
 
     window.addEventListener('online', handleOnline);
@@ -31,8 +44,15 @@ export const OfflineIndicator: React.FC = () => {
     };
   }, [dispatch]);
 
-  if (isOnline && messageQueue.length === 0) {
-    return null; // Don't show indicator when online with no queue
+  useEffect(() => {
+    if (!connectionRestored || canRetry || messageQueue.length > 0) return;
+
+    const timeout = window.setTimeout(() => setConnectionRestored(false), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [canRetry, connectionRestored, messageQueue.length]);
+
+  if (isOnline && messageQueue.length === 0 && !connectionRestored) {
+    return null;
   }
 
   return (
@@ -49,14 +69,28 @@ export const OfflineIndicator: React.FC = () => {
           <span>
             {messageQueue.length > 0
               ? `Online • ${messageQueue.length} message${messageQueue.length !== 1 ? 's' : ''} queued`
-              : 'Connection restored'}
+              : canRetry
+                ? 'Connection restored • your changes are ready to retry'
+                : 'Connection restored'}
           </span>
+          {connectionRestored && canRetry && onRetry && (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={onRetry}
+            >
+              Retry
+            </Button>
+          )}
         </>
       ) : (
         <>
           <WifiOff className="h-4 w-4" />
           <span>
-            You're offline • {messageQueue.length} message{messageQueue.length !== 1 ? 's' : ''} queued
+            You are offline • network actions are paused{messageQueue.length > 0
+              ? ` • ${messageQueue.length} message${messageQueue.length !== 1 ? 's' : ''} queued`
+              : ''}
           </span>
         </>
       )}

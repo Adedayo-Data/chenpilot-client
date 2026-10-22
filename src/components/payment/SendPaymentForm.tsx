@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
-import { SendPaymentRequest, ContactSelection } from '@/types';
+import { SendPaymentRequest, ContactSelection, Contact } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -13,17 +13,15 @@ import {
   Send,
   User,
   X,
-  ChevronDown,
   Loader2,
-  CheckCircle,
-  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import toast from 'react-hot-toast';
 
 interface SendPaymentFormProps {
   onSubmit: (data: SendPaymentRequest) => Promise<void>;
-  contacts: any[];
+  contacts: Contact[];
+  isOnline: boolean;
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
 }
@@ -31,6 +29,7 @@ interface SendPaymentFormProps {
 export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   onSubmit,
   contacts,
+  isOnline,
   isLoading = false,
   defaultTokenType = 'XLM',
 }) => {
@@ -55,6 +54,16 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const watchedRecipient = watch('recipientAddress');
+  const watchedAmount = watch('amount');
+  const hasPaymentDraft = Boolean(watchedRecipient?.trim() || watchedAmount);
+  const [retryAvailable, setRetryAvailable] = useState(false);
+
+  React.useEffect(() => {
+    if (!isOnline && hasPaymentDraft) {
+      setRetryAvailable(true);
+    }
+  }, [hasPaymentDraft, isOnline]);
 
   const handleContactSelect = (contact: ContactSelection) => {
     setSelectedContact(contact);
@@ -92,24 +101,13 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
       // Reset form on success
       reset();
       setSelectedContact(null);
-    } catch (error: any) {
+      setRetryAvailable(false);
+    } catch (error: unknown) {
       console.error('Payment submission error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      toast.error(error instanceof Error ? error.message : 'Failed to send payment');
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const getContactDisplayName = () => {
-    if (selectedContact) {
-      return (
-        <div className="flex items-center space-x-2">
-          <User className="h-4 w-4 text-blue-400" />
-          <span className="text-blue-400">{selectedContact.name}</span>
-        </div>
-      );
-    }
-    return 'Select from contacts';
   };
 
   return (
@@ -158,6 +156,24 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
       {/* Payment Form */}
       <Card className="p-6">
+        {!isOnline && (
+          <p role="status" className="mb-4 text-sm text-amber-300">
+            You are offline. Payments are not queued. Your entered details will remain here until you can retry.
+          </p>
+        )}
+        {isOnline && retryAvailable && hasPaymentDraft && (
+          <div role="status" className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-blue-700 bg-blue-900/30 p-3 text-sm text-blue-100">
+            <span>Connection restored. Your payment draft is ready.</span>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => { void handleSubmit(handleFormSubmit)(); }}
+              disabled={isSubmitting || isLoading}
+            >
+              Retry payment
+            </Button>
+          </div>
+        )}
         <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
           {/* Recipient Address */}
           <div>
@@ -256,7 +272,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
           {/* Submit Button */}
           <Button
             type="submit"
-            disabled={isSubmitting || isLoading}
+            disabled={!isOnline || isSubmitting || isLoading}
             className="w-full"
             size="lg"
           >
@@ -268,7 +284,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             ) : (
               <>
                 <Send className="h-4 w-4 mr-2" />
-                Send Payment
+                {isOnline ? 'Send Payment' : 'Unavailable offline'}
               </>
             )}
           </Button>
