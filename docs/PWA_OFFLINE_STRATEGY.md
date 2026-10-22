@@ -16,3 +16,8 @@ This document outlines the Progressive Web App (PWA) configuration and caching b
 - **Authenticated Route Safety**: 
   - To prevent stale session data or security leaks, all requests matching `/api/auth/*` and `/api/protected/*` are **explicitly excluded** from service worker caching.
   - Network requests for authenticated user data always bypass service worker caches and hit live server endpoints directly.
+
+## 3. Browser Storage & Quota Handling
+- Offline queue entries and voice-message chat history are persisted in `localStorage` for replay when the network is unavailable.
+- When storage reaches quota, the client catches the quota exception, removes only expired offline data (older queued messages or stale chat history and expired voice entries), and retries the write.
+- If the browser still refuses to persist the data, the UI surfaces a clear message stating that the offline content is unavailable rather than failing silently, including when a stored voice clip has been evicted or cannot be decoded by the browser.

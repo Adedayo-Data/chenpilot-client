@@ -1,8 +1,241 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { logger } from "../../utils/logger";
-import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
-import { AgentQueryResponse } from "@/types/agent";
+import { ChatMessage, Conversation } from "@/types";
+import type { AgentCapabilities } from "@/types/agent";
 import apiService from "@/services/api";
+
+const OFFLINE_STORAGE_TTL = {
+  queueMs: 7 * 24 * 60 * 60 * 1000,
+  chatHistoryMs: 30 * 24 * 60 * 60 * 1000,
+  conversationsMs: 30 * 24 * 60 * 60 * 1000,
+};
+
+interface ChatThunkState {
+  auth: {
+    user: { id?: string } | null;
+  };
+  chat: Pick<ChatState, 'currentConversation' | 'isLoading' | 'isTyping'>;
+}
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (!error || typeof error !== 'object') return fallback;
+
+  const errorRecord = error as Record<string, unknown>;
+  const response = errorRecord.response;
+  if (response && typeof response === 'object') {
+    const data = (response as Record<string, unknown>).data;
+    if (data && typeof data === 'object') {
+      const message = (data as Record<string, unknown>).message;
+      if (typeof message === 'string') return message;
+    }
+  }
+
+  return typeof errorRecord.message === 'string' ? errorRecord.message : fallback;
+};
+
+const getTimestampMs = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (!Number.isNaN(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+
+  if (value instanceof Date) {
+    const parsed = value.getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+
+  return null;
+};
+
+const isStorageQuotaError = (error: unknown): boolean => {
+  if (!error) return false;
+
+  if (typeof error === 'object') {
+    const candidate = error as { name?: string; code?: number };
+    if (
+      candidate.name === 'QuotaExceededError' ||
+      candidate.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      candidate.code === 22 ||
+      candidate.code === 1014
+    ) {
+      return true;
+    }
+  }
+
+  if (error instanceof DOMException) {
+    return (
+      error.name === 'QuotaExceededError' ||
+      error.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      error.code === 22 ||
+      error.code === 1014
+    );
+  }
+
+  return false;
+};
+
+const getSafeTimestamp = (value: unknown): number | null => {
+  if (!value || typeof value !== 'object') {
+    return getTimestampMs(value);
+  }
+
+  const record = value as Record<string, unknown>;
+  const candidates = [
+    record.timestamp,
+    record.serverTimestamp,
+    record.updatedAt,
+    record.createdAt,
+    record.metadata,
+  ];
+
+  for (const candidate of candidates) {
+    const ts = getTimestampMs(candidate);
+    if (ts !== null) {
+      return ts;
+    }
+
+    if (candidate && typeof candidate === 'object') {
+      const nested = candidate as Record<string, unknown>;
+      const nestedTs = getTimestampMs(nested.clientTimestamp) ?? getTimestampMs(nested.serverTimestamp);
+      if (nestedTs !== null) {
+        return nestedTs;
+      }
+    }
+  }
+
+  return null;
+};
+
+const getPrunedOfflineValue = (key: string, value: unknown): unknown => {
+  if (typeof window === 'undefined') return value;
+
+  const now = Date.now();
+
+  if (key === 'messageQueue') {
+    if (!Array.isArray(value)) return value;
+    return value.filter((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const ts = getSafeTimestamp(item);
+      if (ts === null) return true;
+      return ts >= now - OFFLINE_STORAGE_TTL.queueMs;
+    });
+  }
+
+  if (key === 'chat_history') {
+    if (!value || typeof value !== 'object') return value;
+
+    const prunedHistory: Record<string, unknown> = {};
+    for (const [conversationId, messages] of Object.entries(value as Record<string, unknown>)) {
+      if (!Array.isArray(messages)) {
+        prunedHistory[conversationId] = messages;
+        continue;
+      }
+
+      const filteredMessages = messages.filter((message) => {
+        const ts = getSafeTimestamp(message);
+        if (ts === null) return true;
+        return ts >= now - OFFLINE_STORAGE_TTL.chatHistoryMs;
+      });
+
+      if (filteredMessages.length > 0) {
+        prunedHistory[conversationId] = filteredMessages;
+      }
+    }
+
+    return prunedHistory;
+  }
+
+  if (key === 'conversations') {
+    if (!Array.isArray(value)) return value;
+    return value.filter((conversation) => {
+      if (!conversation || typeof conversation !== 'object') return false;
+      const updatedAt = getSafeTimestamp(conversation);
+      if (updatedAt === null) return true;
+      return updatedAt >= now - OFFLINE_STORAGE_TTL.conversationsMs;
+    });
+  }
+
+  return value;
+};
+
+const pruneExpiredOfflineData = () => {
+  if (typeof window === 'undefined') return;
+
+  const saveValue = (key: string, value: unknown) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Ignore cascade failures; keep the first failure as the user-facing signal.
+    }
+  };
+
+  try {
+    const rawQueue = localStorage.getItem('messageQueue');
+    if (rawQueue) {
+      const parsedQueue = JSON.parse(rawQueue);
+      saveValue('messageQueue', getPrunedOfflineValue('messageQueue', parsedQueue));
+    }
+  } catch {
+    // Ignore malformed queue data and continue with the rest of the cleanup.
+  }
+
+  try {
+    const rawHistory = localStorage.getItem('chat_history');
+    if (rawHistory) {
+      const parsedHistory = JSON.parse(rawHistory);
+      saveValue('chat_history', getPrunedOfflineValue('chat_history', parsedHistory));
+    }
+  } catch {
+    // Ignore malformed chat history and continue.
+  }
+
+  try {
+    const rawConversations = localStorage.getItem('conversations');
+    if (rawConversations) {
+      const parsedConversations = JSON.parse(rawConversations);
+      saveValue('conversations', getPrunedOfflineValue('conversations', parsedConversations));
+    }
+  } catch {
+    // Ignore malformed conversations data and continue.
+  }
+};
+
+export const persistOfflineStorage = <T>(key: string, value: T, context: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return null;
+  } catch (error) {
+    if (!isStorageQuotaError(error)) {
+      return `Offline ${context} is unavailable because storage could not be saved.`;
+    }
+
+    pruneExpiredOfflineData();
+
+    const sanitizedValue = getPrunedOfflineValue(key, value);
+
+    try {
+      localStorage.setItem(key, JSON.stringify(sanitizedValue));
+      return null;
+    } catch (retryError) {
+      if (isStorageQuotaError(retryError)) {
+        return `Offline ${context} is unavailable because browser storage is full. Old expired offline data was cleared to make space.`;
+      }
+      return `Offline ${context} is unavailable because the browser refused to save it.`;
+    }
+  }
+};
+
+export const isStorageQuotaFailure = (error: unknown): boolean => isStorageQuotaError(error);
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -23,7 +256,7 @@ interface ChatState {
   agentStatus: {
     isConnected: boolean;
     lastHealthCheck: string | null;
-    capabilities: any;
+    capabilities: AgentCapabilities | null;
   };
   chatHistory: { [conversationId: string]: ChatMessage[] };
   tags: { [userId: string]: string[] };
@@ -71,7 +304,7 @@ export const getOrCreateActiveConversation = createAsyncThunk(
   "chat/getOrCreateActiveConversation",
   async (_, { getState, rejectWithValue }) => {
     try {
-      const state = getState() as any;
+      const state = getState() as ChatThunkState;
       const currentConversation = state.chat.currentConversation;
 
       // If we already have an active conversation, return it
@@ -92,7 +325,7 @@ export const getOrCreateActiveConversation = createAsyncThunk(
       };
 
       return newConversation;
-    } catch (error: any) {
+    } catch {
       return rejectWithValue("Failed to create conversation");
     }
   },
@@ -162,7 +395,7 @@ export const sendMessage = createAsyncThunk(
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
 
     try {
-      const state = getState() as any;
+      const state = getState() as ChatThunkState;
       const userId = state.auth.user?.id;
       const currentConversation = state.chat.currentConversation;
 
@@ -170,10 +403,8 @@ export const sendMessage = createAsyncThunk(
         return rejectWithValue("User not authenticated");
       }
 
-      // Get or create active conversation locally
       let conversation = currentConversation;
       if (!conversation) {
-        // Create a new conversation locally
         conversation = {
           id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           title: "New Chat",
@@ -186,97 +417,70 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
-      // Call the API service to get actual response
       const response = await apiService.queryAgent({ userId, query });
 
-      // Handle parsing of the agent response
-      let content = response.result.data;
-
-      // If the response data is a string that looks like JSON, try to parse it
+      const content = response.result.data;
       if (
         typeof content === "string" &&
         (content.trim().startsWith("{") || content.trim().startsWith("["))
       ) {
         try {
           const parsed = JSON.parse(content);
-          // If successfully parsed and it's an object/array, we might want to
-          // extract a 'message' field if it exists, or just keep it as structured data
           if (parsed && typeof parsed === "object") {
-            // If it has a specific 'message' or 'text' field, we might use that for display
-            // but for now we keep the whole object as metadata or stringify it for content
             logger.debug("[ChatSlice] Structured agent response:", parsed);
           }
-        } catch (e) {
-          // Not valid JSON or parsing failed, keep as string
-          logger.debug(
-            "[ChatSlice] Response is not valid JSON, keeping as string",
-          );
+        } catch {
+          logger.debug("[ChatSlice] Response is not valid JSON, keeping as string");
         }
       }
 
-      // Extract server timestamp from response if available
-      const rawServerTimestamp = (response.result as any).serverTimestamp 
-        || (response.result as any).timestamp 
-        || (response as any).serverTimestamp 
-        || (response as any).timestamp 
-        || Date.now();
-      
-      const serverTimestamp = typeof rawServerTimestamp === 'string' && isNaN(Number(rawServerTimestamp))
-        ? new Date(rawServerTimestamp).getTime()
-        : Number(rawServerTimestamp);
+      const rawServerTimestamp =
+        ("serverTimestamp" in response.result ? response.result.serverTimestamp : undefined) ??
+        ("timestamp" in response.result ? response.result.timestamp : undefined) ??
+        ("serverTimestamp" in response ? response.serverTimestamp : undefined) ??
+        ("timestamp" in response ? response.timestamp : undefined) ??
+        Date.now();
 
-      // Create user message representation with updated serverTimestamp and success status
+      const serverTimestampMs =
+        typeof rawServerTimestamp === 'string' && isNaN(Number(rawServerTimestamp))
+          ? new Date(rawServerTimestamp).getTime()
+          : Number(rawServerTimestamp);
+      const messageTimestamp = new Date(serverTimestampMs).toISOString();
+
       const userMessage: ChatMessage = {
         id: tempId,
         type: 'user',
         content: query,
-        timestamp: new Date(serverTimestamp).toISOString(),
-        serverTimestamp: serverTimestamp,
+        timestamp: messageTimestamp,
+        serverTimestamp: serverTimestampMs,
         metadata: {
           status: 'success',
           clientTimestamp: clientTimestamp,
-          serverTimestamp: serverTimestamp,
+          serverTimestamp: serverTimestampMs,
           optimisticId: tempId,
-          tempId: tempId,
-        }
+          tempId,
+        },
       };
 
-      // Create agent message with execution trace if available
       const agentMessage: ChatMessage = {
         id: `msg_agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         type: "agent",
-        content: content,
-        timestamp: new Date(serverTimestamp).toISOString(),
-        serverTimestamp: serverTimestamp,
+        content,
+        timestamp: messageTimestamp,
+        serverTimestamp: serverTimestampMs,
         metadata: {
           status: 'success',
           success: response.result.success,
           error: response.result.error,
           executionTrace: response.result.executionTrace,
-serverTimestamp: serverTimestamp,
-          // Store raw structured data in metadata if it was JSON
+          serverTimestamp: serverTimestampMs,
           rawData: typeof content !== "string" ? content : undefined,
-        }
+        },
       };
 
       return { response, conversation, userMessage, agentMessage, tempId };
-    } catch (error: any) {
-      const errorMsg =
-        error.response?.data?.message ||
-        error.message ||
-        "Failed to send message";
-      return rejectWithValue(errorMsg);
+    } catch (error: unknown) {
+      return rejectWithValue(getErrorMessage(error, "Failed to send message"));
     }
   },
 );
@@ -286,7 +490,7 @@ serverTimestamp: serverTimestamp,
 export const sendVoiceMessage = createAsyncThunk(
   'chat/sendVoiceMessage',
   async (payload: SendVoiceMessagePayload, { getState, rejectWithValue }) => {
-    const state = getState() as any;
+    const state = getState() as ChatThunkState;
 
     if (state.chat.isLoading || state.chat.isTyping) {
       return rejectWithValue('A message is already in progress');
@@ -396,7 +600,7 @@ const chatSlice = createSlice({
     },
     addSystemMessage: (
       state,
-      action: PayloadAction<{ content: string; metadata?: any }>,
+      action: PayloadAction<{ content: string; metadata?: ChatMessage['metadata'] }>,
     ) => {
       const systemMessage: ChatMessage = {
         id: Date.now().toString(),
@@ -452,7 +656,7 @@ state.messages[index] = {
       action: PayloadAction<{
         isConnected: boolean;
         lastHealthCheck: string | null;
-        capabilities?: any;
+        capabilities?: AgentCapabilities | null;
       }>,
     ) => {
       state.agentStatus = { ...state.agentStatus, ...action.payload };
@@ -470,7 +674,12 @@ state.messages[index] = {
       state.currentConversation = null;
       // Save to localStorage
       if (typeof window !== "undefined") {
-        localStorage.setItem("chat_history", JSON.stringify(state.chatHistory));
+        const storageError = persistOfflineStorage("chat_history", state.chatHistory, "chat history");
+        if (storageError) {
+          state.error = storageError;
+        } else {
+          state.error = null;
+        }
       }
     },
     loadChatHistory: (state, action: PayloadAction<string>) => {
@@ -492,10 +701,12 @@ state.messages[index] = {
         state.chatHistory[state.currentConversation.id] = [...state.messages];
         // Save to localStorage
         if (typeof window !== "undefined") {
-          localStorage.setItem(
-            "chat_history",
-            JSON.stringify(state.chatHistory),
-          );
+          const storageError = persistOfflineStorage("chat_history", state.chatHistory, "chat history");
+          if (storageError) {
+            state.error = storageError;
+          } else {
+            state.error = null;
+          }
         }
       }
     },
@@ -504,7 +715,12 @@ state.messages[index] = {
       delete state.chatHistory[conversationId];
       // Save to localStorage
       if (typeof window !== "undefined") {
-        localStorage.setItem("chat_history", JSON.stringify(state.chatHistory));
+        const storageError = persistOfflineStorage("chat_history", state.chatHistory, "chat history");
+        if (storageError) {
+          state.error = storageError;
+        } else {
+          state.error = null;
+        }
       }
     },
     initializeChatHistory: (state) => {
@@ -542,8 +758,15 @@ state.messages[index] = {
         const existingIndex = conversations.findIndex((item: Conversation) => item.id === conversation.id);
         if (existingIndex >= 0) conversations[existingIndex] = conversation;
         else conversations.unshift(conversation);
-        localStorage.setItem("conversations", JSON.stringify(conversations));
-        localStorage.setItem("chat_history", JSON.stringify(state.chatHistory));
+
+        const conversationsError = persistOfflineStorage("conversations", conversations, "conversation list");
+        const chatHistoryError = persistOfflineStorage("chat_history", state.chatHistory, "chat history");
+
+        if (conversationsError || chatHistoryError) {
+          state.error = conversationsError || chatHistoryError;
+        } else {
+          state.error = null;
+        }
       }
     },
     loadConversationsLocally: (state) => {
@@ -571,16 +794,19 @@ state.messages[index] = {
         const updatedConversations = conversations.filter(
           (conv: Conversation) => conv.id !== conversationId,
         );
-        localStorage.setItem(
-          "conversations",
-          JSON.stringify(updatedConversations),
-        );
+        const conversationsError = persistOfflineStorage("conversations", updatedConversations, "conversation list");
 
         const chatHistory = JSON.parse(
           localStorage.getItem("chat_history") || "{}",
         );
         delete chatHistory[conversationId];
-        localStorage.setItem("chat_history", JSON.stringify(chatHistory));
+        const chatHistoryError = persistOfflineStorage("chat_history", chatHistory, "chat history");
+
+        if (conversationsError || chatHistoryError) {
+          state.error = conversationsError || chatHistoryError;
+        } else {
+          state.error = null;
+        }
       }
     },
     addTag: (
@@ -659,10 +885,12 @@ state.messages[index] = {
       });
       // Persist queue to localStorage
       if (typeof window !== "undefined") {
-        localStorage.setItem(
-          "messageQueue",
-          JSON.stringify(state.messageQueue),
-        );
+        const storageError = persistOfflineStorage("messageQueue", state.messageQueue, "queued message");
+        if (storageError) {
+          state.error = storageError;
+        } else {
+          state.error = null;
+        }
       }
     },
     dequeueMessage: (state, action: PayloadAction<string>) => {
@@ -671,16 +899,26 @@ state.messages[index] = {
       );
       // Persist queue to localStorage
       if (typeof window !== "undefined") {
-        localStorage.setItem(
-          "messageQueue",
-          JSON.stringify(state.messageQueue),
-        );
+        const storageError = persistOfflineStorage("messageQueue", state.messageQueue, "queued message");
+        if (storageError) {
+          state.error = storageError;
+        } else {
+          state.error = null;
+        }
       }
     },
     clearMessageQueue: (state) => {
       state.messageQueue = [];
       if (typeof window !== "undefined") {
-        localStorage.removeItem("messageQueue");
+        const storageError = persistOfflineStorage("messageQueue", state.messageQueue, "queued message");
+        if (storageError) {
+          state.error = storageError;
+        } else {
+          state.error = null;
+        }
+        if (!storageError) {
+          localStorage.removeItem("messageQueue");
+        }
       }
     },
     loadMessageQueue: (state) => {
@@ -808,7 +1046,7 @@ state.messages[index] = {
               content = parsed;
               logger.debug("[ChatSlice] Parsed JSON content:", content);
             }
-          } catch (e) {
+          } catch {
             // Not JSON, use as string
             logger.debug("[ChatSlice] Using string content:", content);
           }

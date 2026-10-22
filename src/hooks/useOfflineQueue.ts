@@ -11,14 +11,20 @@ import toast from 'react-hot-toast';
 
 export const useOfflineQueue = () => {
   const dispatch = useAppDispatch();
-  const { isOnline, messageQueue } = useAppSelector((state) => state.chat);
+  const { isOnline, messageQueue, error } = useAppSelector((state) => state.chat);
+
+  useEffect(() => {
+    if (error && /offline .*unavailable|browser storage is full|expired offline data/i.test(error)) {
+      toast.error(error, { id: 'offline-storage-quota' });
+    }
+  }, [error]);
 
   // Process queued messages when coming back online
   useEffect(() => {
     if (isOnline && messageQueue.length > 0) {
       processQueue();
     }
-  }, [isOnline]);
+  }, [isOnline, messageQueue.length, processQueue]);
 
   const processQueue = useCallback(async () => {
     const queueCopy = [...messageQueue];
@@ -36,7 +42,7 @@ export const useOfflineQueue = () => {
         dispatch(removePendingMessage(queuedMsg.id));
 
         toast.success('Queued message sent');
-      } catch (error: any) {
+      } catch (error) {
         dispatch(removePendingMessage(queuedMsg.id));
         const errorMsg = error instanceof Error ? error.message : String(error);
         toast.error(`Failed to send queued message: ${errorMsg}`);
