@@ -69,7 +69,7 @@ describe("nameSchema", () => {
 });
 
 describe("stellarAddressSchema", () => {
-  const validAddr = "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB";
+  const validAddr = "G" + "A".repeat(55);
   it("accepts a valid G... 56-char address", () => {
     expect(stellarAddressSchema.safeParse(validAddr).success).toBe(true);
   });
@@ -111,7 +111,7 @@ describe("tokenAmountSchema", () => {
 describe("createContactSchema", () => {
   const valid = {
     name: "Alice",
-    address: "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB",
+    address: "G" + "A".repeat(55),
     tokenType: "XLM" as const,
   };
   it("accepts a valid contact", () => {

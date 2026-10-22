@@ -13,10 +13,7 @@ import {
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
-  ChatMessage,
-  Conversation,
   PromptVersionRecord,
-  LiquidityPool,
   LiquidityStats,
   LiquidityRequest,
   StellarTransaction,
@@ -34,8 +31,6 @@ import {
   incrementRetryCount,
   retryLabel,
 } from '@/utils/retryUtils';
-
-import axios from 'axios';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
@@ -76,7 +71,7 @@ export const requestAccountFunding = async (
           message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
           txHash: friendbotResponse.data.hash,
         };
-      } catch (friendbotError: unknown) {
+      } catch (_friendbotError: unknown) {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
         );
@@ -112,7 +107,7 @@ let _store: MinimalStore | null = null;
  * Main API service handling HTTP requests, authentication state,
  * error retries, background token refreshes, and backend integrations.
  */
-class ApiService {
+export class ApiService {
   private api: AxiosInstance;
   private token: string | null = null;
 

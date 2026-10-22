@@ -89,3 +89,67 @@ describe('EmptyState', () => {
 ```
 
 Run either example directly with `pnpm test -- <path-to-test>` or run all tests with `pnpm test`.
+
+---
+
+## Service API Contract Testing
+
+Contract tests ensure the frontend service layer conforms strictly to backend API contracts without making real network calls.
+
+- **File location**: [`src/services/__tests__/apiContracts.test.ts`](../src/services/__tests__/apiContracts.test.ts)
+- **Covered surfaces**:
+  - **Contacts**: `GET /contacts`, `POST /contacts`, `PUT /contacts/:id`, `DELETE /contacts/:id`
+  - **Transactions**: `GET /account/:userId/transactions?page=1&limit=10`
+  - **Account Funding**: `POST /api/fund` and Stellar Friendbot fallback
+- **Contract rules**:
+  - All Axios requests are mocked at module level using Vitest (`vi.mock('axios')`).
+  - Request paths, HTTP verbs, query parameters, and JSON payloads are strictly asserted.
+  - Error envelopes (400, 401, 403, 404, 429, 500, and network disconnections) and fallback behaviors are verified.
+  - Run focused contract tests:
+    ```bash
+    pnpm test -- src/services/__tests__/apiContracts.test.ts
+    ```
+
+---
+
+## Accessibility (a11y) Automated Checks
+
+We use [`axe-core`](https://github.com/dequelabs/axe-core) and [`vitest-axe`](https://github.com/chaance/vitest-axe) to detect accessibility regressions automatically across representative views.
+
+- **File location**: [`src/test/accessibility.test.tsx`](../src/test/accessibility.test.tsx)
+- **Command**:
+  ```bash
+  pnpm test:a11y
+  # or
+  pnpm test -- src/test/accessibility.test.tsx
+  ```
+- **Tested Views**:
+  - **Auth View**: `LoginForm` (input labels, password visibility toggle accessible state, `aria-required`, `aria-invalid`, `aria-describedby`).
+  - **Dialog View**: `Modal` (focus trapping, `role="dialog"`, `aria-modal="true"`, `aria-labelledby`, Esc key behavior).
+  - **Contacts View**: Contact creation and edit modal form controls, input labeling, and token selector names.
+  - **Send View**: `SendPaymentForm` (amount, token type selector, recipient address, memo type accessible names).
+- **Documented Exclusions**:
+  - `region`: Excluded in isolated component unit tests because subtrees do not include top-level document landmark tags (`<header>`, `<main>`, `<footer>`).
+  - `color-contrast`: Excluded in the headless JSDOM environment because JSDOM does not compute real layout geometry or pixel colors. True contrast is validated visually and in real browser E2E tests.
+
+---
+
+## End-to-End (E2E) Testing with Playwright
+
+Playwright verifies user flows, routing, keyboard focus, viewport responsiveness, and backend error recovery across real browser engines.
+
+- **Configuration**: [`playwright.config.ts`](../playwright.config.ts)
+- **Suite location**: [`e2e/wallet-critical-paths.spec.ts`](../e2e/wallet-critical-paths.spec.ts)
+- **Command**:
+  ```bash
+  pnpm test:e2e
+  ```
+- **Wallet-Critical Paths Covered**:
+  1. **Login to Dashboard**: Testnet user authentication, credential submission, and redirection to authenticated workspace.
+  2. **Contact Creation**: Navigating to contacts, opening modal, verifying keyboard focus management, filling and submitting new contact.
+  3. **Payment Validation & Error Recovery**: Navigating to send, triggering client-side validation errors, 7-decimal precision handling (`0.0000001` XLM), and verifying graceful UI recovery on backend 503 errors.
+  4. **Transaction History**: Rendering paginated transaction lists, status badges, and transaction details.
+- **Security & Testnet Rules**:
+  - **NEVER use mainnet credentials, secret keys, or seeds in tests.**
+  - All E2E tests use deterministic route interception (`page.route()`) or testnet-specific addresses.
+  - Test data adheres to the rules in [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`SECURITY.md`](../SECURITY.md).

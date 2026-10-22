@@ -186,17 +186,6 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
       // Call the API service to get actual response
       const response = await apiService.queryAgent({ userId, query });
 

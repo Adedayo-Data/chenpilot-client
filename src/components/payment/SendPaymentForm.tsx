@@ -13,10 +13,7 @@ import {
   Send,
   User,
   X,
-  ChevronDown,
   Loader2,
-  CheckCircle,
-  AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import toast from 'react-hot-toast';
@@ -100,18 +97,6 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     }
   };
 
-  const getContactDisplayName = () => {
-    if (selectedContact) {
-      return (
-        <div className="flex items-center space-x-2">
-          <User className="h-4 w-4 text-blue-400" />
-          <span className="text-blue-400">{selectedContact.name}</span>
-        </div>
-      );
-    }
-    return 'Select from contacts';
-  };
-
   return (
     <div className="space-y-6">
       {/* Contact Selection */}
@@ -161,10 +146,11 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
         <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
           {/* Recipient Address */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="recipient-address" className="block text-sm font-medium text-gray-300 mb-2">
               Recipient Address
             </label>
             <Input
+              id="recipient-address"
               {...register('recipientAddress')}
               placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
               className={cn(
@@ -180,11 +166,12 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
           {/* Amount */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="send-amount" className="block text-sm font-medium text-gray-300 mb-2">
               Amount
             </label>
             <div className="flex space-x-2">
               <Input
+                id="send-amount"
                 {...register('amount')}
                 placeholder="0.00"
                 type="number"
@@ -192,6 +179,8 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                 className="flex-1"
               />
               <select
+                id="token-type-select"
+                aria-label="Token Type"
                 {...register('tokenType')}
                 className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
@@ -213,11 +202,13 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
           {/* Memo */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="memo-type-select" className="block text-sm font-medium text-gray-300 mb-2">
               Memo (Optional)
             </label>
             <div className="space-y-2">
               <select
+                id="memo-type-select"
+                aria-label="Memo Type"
                 {...register('memoType')}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
@@ -229,6 +220,8 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
               
               {watchedMemoType !== 'none' && (
                 <Input
+                  id="memo-value-input"
+                  aria-label="Memo Value"
                   {...register('memo')}
                   placeholder={
                     watchedMemoType === 'text'

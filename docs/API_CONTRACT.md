@@ -88,17 +88,33 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `GET /auth/funding/funded-account-balance` | No body. | `{"success":true,"data":{"balance":"10","hasBalance":true}}` | Service method only; no direct screen caller found. |
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
+| `POST /api/fund` | `{"publicKey":"G...","requiredAmount":10}` | `{"success":true,"message":"Account funded successfully via backend service.","txHash":"0xabc"}` | Account auto-funding endpoint; on testnet, falls back to Stellar Friendbot (`GET https://friendbot.stellar.org/?addr={publicKey}`) if backend fails. |
+
+### Transaction Precision & Testnet Contract Rules
+
+- **Precision**: All Stellar amounts in transaction requests, fees, and balance envelopes are formatted as strings with up to 7 decimal places (stroops, e.g. `'10.5000000'`). Do not use floating-point numbers.
+- **Pagination**: `page` defaults to 1 (1-indexed) and `limit` defaults to 10. Empty pages return `{ success: true, data: { transactions: [], total: 0, page: N, limit: M } }`.
+- **Testnet-Only Data**: Automated tests and client requests must strictly use testnet addresses (`G...`) and never transmit real mainnet credentials or private keys.
+- **Contract Tests**: Verified in [`src/services/__tests__/apiContracts.test.ts`](../src/services/__tests__/apiContracts.test.ts).
 
 ## Contacts Endpoints
 
 `Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.
 
+### Fallback Contract Behavior
+When contacting an experimental backend that lacks dedicated `/contacts` routes:
+- `GET /contacts`: Catches HTTP 404 and returns a successful empty envelope: `{ success: true, data: [], message: "Contact management is available through the chat interface" }`.
+- `POST /contacts`: Catches HTTP 404 and returns `{ success: false, status: 404, message: "Contact creation is available through the chat interface. Try: \"Add John as a contact with address 0x123...\"" }`.
+- `PUT /contacts/{id}`: Catches HTTP 404 and returns `{ success: false, status: 404, message: "Contact updates are available through the chat interface" }`.
+- `DELETE /contacts/{id}`: Catches HTTP 404 and returns `{ success: false, status: 404, message: "Contact deletion is available through the chat interface. Try: \"Remove John from my contacts\"" }`.
+- Non-404 errors (400, 401, 403, 500, network loss) reject with the underlying Axios error and are not converted into fallback success envelopes.
+
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow is present, but its current Redux thunks return mock data and do not call this method. |
-| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
+| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow is present; handles 404 fallback gracefully. |
+| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Contact creation; 404 becomes an explanatory failure envelope. |
+| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Contact update; 404 becomes an explanatory failure envelope. |
+| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Contact deletion; 404 becomes an explanatory failure envelope. |
 
 ## Liquidity Endpoint
 

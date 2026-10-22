@@ -55,6 +55,9 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Run accessibility tests
+        run: pnpm test:a11y
+
       - name: Build project
         run: pnpm build
 
