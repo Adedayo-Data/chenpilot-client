@@ -110,7 +110,7 @@ export function ExecutionTraceDemo() {
       <div className="bg-gray-800 rounded-lg p-4 mb-6">
         <h3 className="text-lg font-semibold text-white mb-2">Sample Agent Response:</h3>
         <div className="text-gray-300">
-          Based on your query about high-yield vault strategies, I've analyzed the current market and identified two excellent options:
+          Based on your query about high-yield vault strategies, I&apos;ve analyzed the current market and identified two excellent options:
           
           <div className="mt-4 p-3 bg-gray-700 rounded">
             <strong>🏦 Stable Yield Plus</strong> - 12.5% APY, Low Risk

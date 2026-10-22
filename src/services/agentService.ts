@@ -1,4 +1,4 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { logger } from "../utils/logger";
 import {
   AgentQueryRequest,
@@ -69,7 +69,7 @@ class AgentService {
       // Since the experimental backend doesn't have a /health endpoint,
       // we'll try to make a simple request to test connectivity
       // We'll use a HEAD request to avoid authentication issues
-      const response = await this.api.request({
+      await this.api.request({
         method: 'HEAD',
         url: '/',
         timeout: 5000
@@ -193,11 +193,11 @@ class AgentService {
    * }
    * ```
    */
-  async queryAgent(request: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(request: AgentQueryRequest, options?: { signal?: AbortSignal }): Promise<AgentQueryResponse> {
     try {
       logger.debug('[AgentService] Sending query:', request.query);
       
-      const response = await this.api.post('/query', request);
+      const response = await this.api.post('/query', request, { signal: options?.signal });
       
       logger.debug('[AgentService] Query response:', response.data);
       
@@ -218,11 +218,23 @@ class AgentService {
         }
       };
     } catch (error: unknown) {
+      const axiosError = error as {
+        code?: string;
+        name?: string;
+        message?: string;
+        response?: { data?: { message?: string } };
+      };
+      if (
+        axiosError.code === 'ERR_CANCELED' ||
+        axiosError.name === 'CanceledError' ||
+        axiosError.name === 'AbortError'
+      ) {
+        throw error;
+      }
       console.error('[AgentService] Query failed:', error);
 
       // Convert technical errors to user-friendly messages
       let friendlyMessage = 'Agent service is currently unavailable. Please try again later.';
-      const axiosError = error as { response?: { data?: { message?: string } }; message?: string };
       const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
       
       if (errorMsg.includes('invalid query')) {
@@ -340,7 +352,7 @@ class AgentService {
       await this.healthCheck();
       logger.debug('[AgentService] Successfully initialized');
     } catch (error) {
-      console.warn('[AgentService] Failed to initialize, will retry on first use');
+      console.warn('[AgentService] Failed to initialize, will retry on first use', error);
     }
   }
 

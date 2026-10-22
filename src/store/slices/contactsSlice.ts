@@ -1,6 +1,29 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
+import { PAGINATION } from '@/constants';
+
+export const paginateContacts = (
+  contacts: Contact[],
+  page: number,
+  pageSize = PAGINATION.CONTACTS_PAGE_SIZE,
+): Contact[] => {
+  const start = Math.max(0, page - 1) * pageSize;
+  return contacts.slice(start, start + pageSize);
+};
+export const hasContactAddressChanged = (savedAddress: string, proposedAddress: string): boolean =>
+  proposedAddress.trim() !== savedAddress;
+
+export const filterContacts = (contacts: Contact[], searchTerm: string): Contact[] => {
+  const normalizedTerm = searchTerm.trim().toLowerCase();
+  if (!normalizedTerm) return contacts;
+
+  return contacts.filter((contact) =>
+    contact.name.toLowerCase().includes(normalizedTerm) ||
+    contact.address.toLowerCase().includes(normalizedTerm) ||
+    (contact.note ?? '').toLowerCase().includes(normalizedTerm)
+  );
+};
 
 interface ContactsState {
   list: Contact[];
@@ -29,6 +52,28 @@ export const getContacts = createAsyncThunk(
       return rejectWithValue(response.message);
     }
     return response.data;
+    // Mock contacts
+    const mockContacts: Contact[] = [
+      {
+        id: '1',
+        name: 'Mock Contact 1',
+        address: '0x1234567890abcdef',
+        tokenType: 'STRK',
+        note: 'Primary trading account for A/B testing.',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        id: '2',
+        name: 'Mock Contact 2',
+        address: '0xabcdef1234567890',
+        tokenType: 'ETH',
+        note: 'Treasury vault for monthly settlements.',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    return mockContacts;
   }
 );
 
@@ -44,6 +89,17 @@ export const createContact = createAsyncThunk(
       return rejectWithValue(response.message);
     }
     return response.data;
+    // Mock create contact
+    const mockContact: Contact = {
+      id: `mock_${Date.now()}`,
+      name: contactData.name,
+      address: contactData.address,
+      tokenType: contactData.tokenType,
+      note: contactData.note?.trim() || undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return mockContact;
   }
 );
 
@@ -59,6 +115,17 @@ export const updateContact = createAsyncThunk(
       return rejectWithValue(response.message);
     }
     return response.data;
+    // Mock update contact
+    const mockContact: Contact = {
+      id,
+      name: data.name || 'Updated Contact',
+      address: data.address || '0xupdatedaddress',
+      tokenType: data.tokenType || 'STRK',
+      note: data.note?.trim() || undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return mockContact;
   }
 );
 

@@ -38,7 +38,7 @@ export function TokenRefreshExample() {
     }
   };
 
-  const getTokenStatus = () => {
+  const getTokenStatus = (): { status: string; color: 'default' | 'destructive' } => {
     if (!token) return { status: 'No Token', color: 'destructive' };
     if (isTokenExpired()) return { status: 'Expired', color: 'destructive' };
     return { status: 'Valid', color: 'default' };
@@ -69,7 +69,7 @@ export function TokenRefreshExample() {
         {/* Token Status */}
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium">Token Status:</span>
-          <Badge variant={tokenStatus.color as any}>
+          <Badge variant={tokenStatus.color}>
             {tokenStatus.status}
           </Badge>
         </div>
