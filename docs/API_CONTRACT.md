@@ -56,7 +56,7 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `HEAD /` | No body; fallback probe. | Any HTTP status below 500; the body is ignored. | Used only when `GET /health` answers `404`/`405`/`501`. The result is connectivity-only: `probe: "connectivity"`, `healthEndpointSupported: false`. |
 | `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_query_1767225600_k3j9xz"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. The client adds `requestId`, `stateChanging` and, on failure, `errorKind` to the returned `result`. |
 | `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. Also checked before retrying a state-changing prompt (#262), where `not_found` means the id was never seen. |
-| `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
+| `GET /memory/{userId}` | `GET /memory/user-1` (the id is URL-encoded) | `200` with a JSON array of strings, e.g. `["prefers USDC","risk: low"]`. A user with no memory **must** get `200 []`, not `404`. | `agentService.getMemory` / `apiService.getAgentMemory` return `AgentMemoryResult` (#267): `{ok:true, entries}` for any valid array, including empty; `{ok:false, error:{kind, message, status?}}` otherwise. Kinds: `unavailable` (network, 5xx), `unauthorized` (401/403), `not_found` (404), `invalid_response` (not an array of strings). Failures no longer turn into an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
@@ -122,7 +122,25 @@ Earlier versions defaulted `success` to `true` and wrapped unknown bodies as suc
 
 The dashboard shows "Unavailable" for `null` metrics and "Protocol health is unavailable" for empty `services`. A service whose health is `null` gets an "Unknown" marker. The probe's measured response time is shown, labelled "connectivity check only" when `/health` is unsupported.
 
-`getCapabilities()` still returns a local object and makes no HTTP request. Its success no longer counts as the agent being online.
+Capability lookups (see Agent Capabilities below) never count as the agent being online; only the health probe does.
+
+### Agent Capabilities (#270)
+
+**Proposed; backend support not yet confirmed.** `agentService.getCapabilities()` / `apiService.getAgentCapabilities()` call:
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /capabilities` | No body; 5s timeout. | `{"supportedActions":["swap","check_balance"],"supportedAssets":["XLM","USDC"],"supportedProtocols":["Soroswap"],"features":{"swapping":true,"lending":false},"limits":{"maxQueryLength":500},"updatedAt":"2026-10-21T09:00:00Z"}` | `AgentStatus` capability section. `supportedActions`, `supportedAssets` and `supportedProtocols` must be string arrays. Missing feature flags count as `false`, missing limits as `0`. |
+
+The call never throws. It returns an `AgentCapabilitiesResult` with a source and freshness:
+
+| `availability` | When | `source` | `capabilities` | UI |
+| --- | --- | --- | --- | --- |
+| `available` | `2xx` with a valid body | `backend` | Backend data | "Reported by agent"; features shown as enabled |
+| `unsupported` | `404` / `405` / `501` | `local_fallback` | The app's built-in list (`LOCAL_CAPABILITIES`) | "App defaults (not confirmed)"; features shown disabled (`aria-disabled`, struck through), with an explanation |
+| `unavailable` | Network error, other HTTP errors, or a malformed body | `none` | `null` | "Couldn't be reached" explanation; no actions shown |
+
+`fetchedAt` records when the client asked, and `updatedAt` echoes the backend's value if sent. Results older than 5 minutes (`CAPABILITIES_MAX_AGE_MS`) show an "out of date" note. An `unavailable` result no longer counts as the agent being connected. Previously a fixed list was returned as if live, and outages became an empty, all-disabled object.
 
 ### Agent Timeouts And Status Checks
 

@@ -1201,6 +1201,8 @@ class ApiService {
           errorKind,
           requestId: data.clientRequestId,
           stateChanging,
+          // No HTTP response means the message never reached the service (#266)
+          delivered: Boolean((error as { response?: unknown })?.response),
         },
       };
     }
@@ -1228,33 +1230,14 @@ class ApiService {
     }
   }
 
+  /**
+   * Retrieve agent capabilities with their source and freshness (#270). Never throws; an
+   * outage is reported as `availability: 'unavailable'` instead of an empty capability list.
+   *
+   * @returns Promise resolving to `AgentCapabilitiesResult`.
+   */
   async getAgentCapabilities() {
-    try {
-      return await agentService.getCapabilities();
-    } catch (error) {
-      console.error("Failed to get agent capabilities:", error);
-
-      return {
-        supportedActions: [],
-        supportedAssets: [],
-        supportedProtocols: [],
-        features: {
-          defi: false,
-          crossChain: false,
-          voiceCommands: false,
-          smartContracts: false,
-          yieldFarming: false,
-          lending: false,
-          borrowing: false,
-          swapping: false,
-        },
-        limits: {
-          maxQueryLength: 0,
-          maxConcurrentQueries: 0,
-          rateLimitPerMinute: 0,
-        },
-      };
-    }
+    return agentService.getCapabilities();
   }
 
   async checkAgentHealth() {
@@ -1291,13 +1274,15 @@ class ApiService {
     }
   }
 
+  /**
+   * Retrieve stored agent memory records for a given user (#267). Never throws; returns a typed
+   * result so callers can tell an empty memory (`ok: true, entries: []`) from an outage (`ok: false`).
+   *
+   * @param userId - User ID string.
+   * @returns Promise resolving to `AgentMemoryResult`.
+   */
   async getAgentMemory(userId: string) {
-    try {
-      return await agentService.getMemory(userId);
-    } catch (error) {
-      console.error("Failed to get agent memory:", error);
-      return [];
-    }
+    return agentService.getMemory(userId);
   }
 
   async clearAgentMemory(userId: string): Promise<void> {

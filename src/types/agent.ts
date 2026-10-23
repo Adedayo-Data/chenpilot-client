@@ -45,6 +45,13 @@ export interface AgentQueryResponse {
     success: boolean;
     data: string;
     error?: string;
+    /**
+     * Whether the request reached the service (#266). False for network failures where no
+     * HTTP response came back; the user's message then counts as not sent.
+     */
+    delivered?: boolean;
+    /** Server id for the user's message, used to reconcile the optimistic row (#266). */
+    userMessageId?: string;
     /** Set on failures so the UI can tell a timeout apart from a connectivity error (#274). */
     errorKind?: AgentErrorKind;
     /** Echo of `clientRequestId`; use with `agentService.getActionStatus`. */
@@ -261,4 +268,33 @@ export interface AgentNotification {
   timestamp: string;
   userId?: string;
   read: boolean;
+}
+
+/** Why agent memory could not be read (#267). Never confused with an empty memory. */
+export type AgentMemoryErrorKind = 'unavailable' | 'unauthorized' | 'not_found' | 'invalid_response';
+
+/**
+ * Result of reading agent memory (#267): `ok: true` with a possibly empty list is a real answer;
+ * `ok: false` means the memory could not be read.
+ */
+export type AgentMemoryResult =
+  | { ok: true; entries: string[] }
+  | { ok: false; error: { kind: AgentMemoryErrorKind; message: string; status?: number } };
+
+/**
+ * Capability lookup result (#270).
+ * - `available`: the backend reported its capabilities (`source: 'backend'`).
+ * - `unsupported`: the backend has no capabilities endpoint; `capabilities` is the client's
+ *   built-in list (`source: 'local_fallback'`) and is not confirmed for this deployment.
+ * - `unavailable`: the backend could not be asked (outage or invalid answer); nothing is known.
+ */
+export interface AgentCapabilitiesResult {
+  availability: 'available' | 'unsupported' | 'unavailable';
+  source: 'backend' | 'local_fallback' | 'none';
+  capabilities: AgentCapabilities | null;
+  /** When the client obtained this result (ISO 8601). */
+  fetchedAt: string;
+  /** When the backend last updated its capability data, if it says so. */
+  updatedAt?: string;
+  error?: string;
 }

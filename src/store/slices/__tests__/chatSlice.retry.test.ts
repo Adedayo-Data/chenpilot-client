@@ -67,7 +67,10 @@ describe('sendMessage retry metadata (#262)', () => {
     vi.mocked(apiService.queryAgent).mockRejectedValueOnce(new Error('Network error: connection lost'));
     await store.dispatch(sendMessage('balance?'));
     const reply = store.getState().chat.messages.find((m) => m.type === 'agent')!;
-    expect(reply.metadata).toMatchObject({ retryable: true, retryPrompt: 'balance?' });
+    // The message never reached the service, so the retry lives on the user bubble (#266),
+    // not on this error reply; the prompt is still preserved for reference (#262)
+    expect(reply.metadata).toMatchObject({ retryable: false, retryPrompt: 'balance?' });
+    expect(store.getState().chat.messages.find((m) => m.type === 'user')?.metadata?.delivery).toBe('failed');
 
     const anonymous = configureStore({
       reducer: { chat: chatReducer, auth: authReducer },

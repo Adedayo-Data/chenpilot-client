@@ -374,6 +374,10 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Delivery state of a user message (#266); see src/store/messageDelivery.ts. */
+    delivery?: "queued" | "sending" | "sent" | "failed";
+    /** Server-assigned id once the message was acknowledged (#266). */
+    serverId?: string;
     /** Failure category of an agent reply (#274, #262), e.g. `timeout` vs `network`. */
     errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
     /** Client request id / idempotency key of the query this reply belongs to (#274, #262). */

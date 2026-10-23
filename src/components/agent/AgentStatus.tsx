@@ -18,7 +18,8 @@ import {
   Loader2
 } from 'lucide-react';
 import apiService from '@/services/api';
-import { AgentStatus as AgentStatusType, AgentCapabilities, ServiceStatus } from '@/types/agent';
+import { AgentStatus as AgentStatusType, AgentCapabilitiesResult, ServiceStatus } from '@/types/agent';
+import { isCapabilitiesStale } from '@/services/agentService';
 
 const UNAVAILABLE = 'Unavailable';
 
@@ -30,6 +31,22 @@ export function formatUptime(seconds: number | null): string {
   return `${Math.floor(seconds / 60)}m`;
 }
 
+
+/** Explanation shown when capability data can't be trusted as live (#270). */
+export function capabilityNotice(result: AgentCapabilitiesResult | null, now = Date.now()): string | null {
+  if (!result) return null;
+  if (result.availability === 'unavailable') {
+    return "Capabilities are unavailable right now: the agent couldn't be reached. Actions are disabled until it responds.";
+  }
+  if (result.availability === 'unsupported') {
+    return "This agent doesn't report its capabilities. The actions below are the app's defaults and may not be enabled in this environment.";
+  }
+  if (isCapabilitiesStale(result, now)) {
+    return 'Capability data may be out of date. Refresh to check again.';
+  }
+  return null;
+}
+
 interface AgentStatusProps {
   className?: string;
   showDetails?: boolean;
@@ -39,7 +56,7 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
   const dispatch = useAppDispatch();
   const { agentStatus } = useAppSelector((state) => state.chat);
   const [status, setStatus] = useState<AgentStatusType | null>(null);
-  const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
+  const [capabilities, setCapabilities] = useState<AgentCapabilitiesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
 
@@ -216,20 +233,51 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
           </div>
 
           {capabilities && (
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-gray-300">Capabilities</div>
-              <div className="flex flex-wrap gap-1">
-                {Object.entries(capabilities.features)
-                  .filter(([_, enabled]) => enabled)
-                  .map(([feature, _]) => (
-                    <span
-                      key={feature}
-                      className="px-2 py-1 bg-purple-600/20 text-purple-300 text-xs rounded"
-                    >
-                      {feature}
-                    </span>
-                  ))}
+            <div className="space-y-2" data-testid="agent-capabilities" data-availability={capabilities.availability}>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-gray-300">Capabilities</span>
+                <span className="text-gray-500">
+                  {capabilities.source === 'backend'
+                    ? 'Reported by agent'
+                    : capabilities.source === 'local_fallback'
+                      ? 'App defaults (not confirmed)'
+                      : 'Unknown'}
+                  {' · '}
+                  <time dateTime={capabilities.fetchedAt}>
+                    checked {new Date(capabilities.fetchedAt).toLocaleTimeString()}
+                  </time>
+                </span>
               </div>
+              {capabilityNotice(capabilities) && (
+                <p role="note" className="text-xs text-yellow-300">
+                  {capabilityNotice(capabilities)}
+                </p>
+              )}
+              {capabilities.capabilities ? (
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(capabilities.capabilities.features)
+                    .filter(([, enabled]) => enabled)
+                    .map(([feature]) => {
+                      const confirmed = capabilities.availability === 'available';
+                      return (
+                        <span
+                          key={feature}
+                          aria-disabled={!confirmed}
+                          title={confirmed ? undefined : 'Not confirmed for this environment'}
+                          className={`px-2 py-1 text-xs rounded ${
+                            confirmed
+                              ? 'bg-purple-600/20 text-purple-300'
+                              : 'bg-gray-800 text-gray-500 line-through decoration-gray-600'
+                          }`}
+                        >
+                          {feature}
+                        </span>
+                      );
+                    })}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No capabilities to show.</p>
+              )}
             </div>
           )}
 
