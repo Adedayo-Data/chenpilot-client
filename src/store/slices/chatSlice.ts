@@ -1,8 +1,17 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { logger } from "../../utils/logger";
-import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
+import { ChatMessage, AgentQueryRequest, Conversation, ChatHistoryStatus } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import { canTransition, getDeliveryState, DeliveryState } from "@/store/messageDelivery";
+import { logout } from "./authSlice";
+import { classifyAgentError, isRetryableErrorKind, isStateChangingQuery } from "@/services/agentService";
+import {
+  CONVERSATION_DELETED,
+  cancelConversationRequests,
+  isConversationDeleted,
+  trackConversationRequest,
+} from "@/store/conversationRequests";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -32,6 +41,16 @@ interface ChatState {
   messageQueue: Array<{ id: string; query: string; timestamp: string }>;
   pendingMessages: Set<string>;
   optimisticUpdates: Map<string, ChatMessage>;
+  /** Server history load state, kept separate from `messages` so a failure is not shown as empty (#265). */
+  historyStatus: ChatHistoryStatus;
+  historyError: string | null;
+  /** Partial agent reply while a streamed response is in flight (#261); cleared when it settles. */
+  streamingResponse: { requestId: string; text: string } | null;
+  /** Cursor for the next older history page (#264); null when unknown or exhausted. */
+  historyCursor: string | null;
+  historyHasMore: boolean;
+  isLoadingOlderHistory: boolean;
+  olderHistoryError: string | null;
 }
 
 const initialState: ChatState = {
@@ -53,6 +72,13 @@ const initialState: ChatState = {
   messageQueue: [],
   pendingMessages: new Set(),
   optimisticUpdates: new Map(),
+  historyStatus: "idle",
+  historyError: null,
+  streamingResponse: null,
+  historyCursor: null,
+  historyHasMore: false,
+  isLoadingOlderHistory: false,
+  olderHistoryError: null,
 };
 
 const DEFAULT_CONVERSATION_TITLE = "New Chat";
@@ -180,11 +206,179 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
-export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+/**
+ * Merge server messages into the local list by message id; the server copy wins (#265).
+ */
+export const mergeMessagesById = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const byId = new Map<string, ChatMessage>();
+  for (const message of existing) byId.set(message.id, message);
+  for (const message of incoming) {
+    if (message?.id) byId.set(message.id, message);
+  }
+  return sortMessagesChronologically(Array.from(byId.values()));
+};
+
+/** Messages requested per history page (#264). */
+export const HISTORY_PAGE_SIZE = 50;
+
+/**
+ * Load the newest page of chat history from the server (#265, #264). Locally cached messages
+ * stay in place if this fails. A 404/501 means the backend has no history endpoint; that
+ * resolves with no messages rather than an error, so the page falls back to the local cache.
+ */
+export const fetchChatHistory = createAsyncThunk(
+  "chat/fetchChatHistory",
+  async (_: void, { rejectWithValue }) => {
+    try {
+      return await apiService.getChatHistory({ limit: HISTORY_PAGE_SIZE });
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404 || status === 501) {
+        return { messages: [] as ChatMessage[], nextCursor: null, hasMore: false };
+      }
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load chat history",
+      );
+    }
+  },
+);
+
+/**
+ * Load the next older page of history using the stable cursor from the previous page (#264).
+ * Skipped while another page is loading or when there is nothing older.
+ */
+export const loadOlderHistory = createAsyncThunk(
+  "chat/loadOlderHistory",
+  async (_: void, { getState, rejectWithValue }) => {
+    const cursor = (getState() as { chat: ChatState }).chat.historyCursor as string;
+    try {
+      const page = await apiService.getChatHistory({ before: cursor, limit: HISTORY_PAGE_SIZE });
+      return { page, cursor };
+    } catch (error: any) {
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load older messages",
+      );
+    }
+  },
+  {
+    condition: (_: void, { getState }) => {
+      const chat = (getState() as { chat: ChatState }).chat;
+      return Boolean(chat.historyHasMore && chat.historyCursor && !chat.isLoadingOlderHistory);
+    },
+  },
+);
+
+/**
+ * Delete a conversation safely (#269): abort its in-flight agent requests, mark it deleted so
+ * late responses are ignored, then remove it from state and storage. Confirmation happens in the UI.
+ */
+export const deleteConversation = createAsyncThunk(
+  "chat/deleteConversation",
+  async (conversationId: string, { dispatch }) => {
+    const cancelled = cancelConversationRequests(conversationId);
+    dispatch(chatSlice.actions.deleteConversationLocally(conversationId));
+    return { conversationId, cancelled };
+  },
+);
+
+/**
+ * Keys that identify the same logical message across local, optimistic and server copies (#277).
+ * `requestId` is shared by the user and agent message of one query, so it only matches within a type.
+ */
+const messageIdentityKeys = (message: ChatMessage): string[] => {
+  const keys = [`id:${message.id}`];
+  const meta = message.metadata;
+  if (meta?.optimisticId) keys.push(`id:${meta.optimisticId}`);
+  if (meta?.tempId) keys.push(`id:${meta.tempId}`);
+  if (meta?.requestId) keys.push(`req:${message.type}:${meta.requestId}`);
+  return keys;
+};
+
+/**
+ * Merge messages received from the server (live socket events or a post-reconnect resync)
+ * into the local list without duplicates (#277). An incoming message replaces the local
+ * message it matches (same id, or its optimistic/temp id or request id), so the server
+ * copy wins over the optimistic one. Unmatched messages are appended. Result is sorted.
+ */
+export const mergeIncomingMessages = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const merged = [...existing];
+  const index = new Map<string, number>();
+  merged.forEach((message, i) => {
+    for (const key of messageIdentityKeys(message)) index.set(key, i);
+  });
+
+  for (const message of incoming) {
+    const keys = messageIdentityKeys(message);
+    const matchIdx = keys.map((key) => index.get(key)).find((i) => i !== undefined);
+
+    if (matchIdx !== undefined) {
+      const local = merged[matchIdx];
+      merged[matchIdx] = {
+        ...message,
+        metadata: { ...local.metadata, ...message.metadata, status: message.metadata?.status ?? 'success' },
+      };
+      for (const key of messageIdentityKeys(merged[matchIdx])) index.set(key, matchIdx);
+    } else {
+      merged.push(message);
+      for (const key of keys) index.set(key, merged.length - 1);
+    }
+  }
+
+  return sortMessagesChronologically(merged);
+};
+
+export const ABORT_ERROR = "ABORT_ERR";
+
+export type SendMessageArg =
+  | string
+  | {
+      query: string;
+      tempId?: string;
+      clientTimestamp?: number;
+      /** Reuse the original request id when retrying, so the backend can deduplicate (#262). */
+      clientRequestId?: string;
+    };
+
+const clientRequestIdFor = (arg: SendMessageArg, requestId: string): string =>
+  (typeof arg === 'object' && arg.clientRequestId) || `agent_req_${requestId}`;
+
+/**
+ * Retry metadata for a failed agent reply (#262): whether a retry is offered, plus what is
+ * needed to resend the same prompt with the same request id.
+ */
+const retryMetadata = (query: string, tempId: string, requestId: string, errorKind: ReturnType<typeof classifyAgentError>) => ({
+  errorKind,
+  requestId,
+  retryable: isRetryableErrorKind(errorKind),
+  retryPrompt: query,
+  retryTempId: tempId,
+  stateChanging: isStateChangingQuery(query),
+});
+
+function isAbortError(error: unknown): boolean {
+  const err = error as { code?: string; name?: string; message?: string };
+  return (
+    err?.code === "ERR_CANCELED" ||
+    err?.name === "CanceledError" ||
+    err?.name === "AbortError" ||
+    err?.message === ABORT_ERROR
+  );
+}
+
+/** Apply a delivery transition if the state machine allows it (#266). */
+const transitionDelivery = (message: ChatMessage, to: DeliveryState): boolean => {
+  if (!canTransition(getDeliveryState(message), to)) return false;
+  message.metadata = {
+    ...message.metadata,
+    delivery: to,
+    status: to === 'sent' ? 'success' : to === 'failed' ? 'failed' : 'pending',
+  };
+  return true;
+};
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, dispatch }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal, dispatch }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -214,27 +408,45 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      conversation = titleConversationFromMessage(conversation, {
-        id: tempId,
-        type: "user",
-        content: query,
-        timestamp: new Date(clientTimestamp).toISOString(),
-      }) as Conversation;
-      dispatch(setCurrentConversation(conversation));
+      // The client request id is the idempotency key: a retry reuses it so the backend can
+      // recognise a repeat (#262).
+      const clientRequestId = clientRequestIdFor(arg, requestId);
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
+      // Track the request against its conversation so deleting the conversation aborts it (#269).
+      // The Stop button aborts the thunk signal, which is forwarded to the tracked request.
+      const tracked = trackConversationRequest(conversation.id);
+      const onAbort = () => tracked.abort();
+      signal.addEventListener("abort", onAbort);
+      let response: AgentQueryResponse;
+      try {
+        response = await apiService.queryAgent(
+          { userId, query, clientRequestId },
+          {
+            signal: tracked.signal,
+            // Partial text is streamed into `streamingResponse` when the backend supports it (#261)
+            onDelta: (text) => dispatch(streamingDelta({ requestId, text })),
+          },
+        );
+      } catch (error) {
+        // Aborted because the conversation was deleted, not because the user pressed Stop (#269)
+        if (isConversationDeleted(conversation.id)) {
+          return rejectWithValue(CONVERSATION_DELETED);
+        }
+        throw error;
+      } finally {
+        tracked.release();
+        signal.removeEventListener("abort", onAbort);
+      }
 
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
+      // The conversation was deleted while waiting: drop the late response (#269)
+      if (isConversationDeleted(conversation.id) || (tracked.signal.aborted && !signal.aborted)) {
+        return rejectWithValue(CONVERSATION_DELETED);
+      }
 
-      // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query });
+      // No HTTP response came back: the message never reached the service (#266)
+      if (response.result.delivered === false) {
+        return rejectWithValue(response.result.error || "Network error: message not delivered");
+      }
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -272,15 +484,19 @@ export const sendMessage = createAsyncThunk(
         ? new Date(rawServerTimestamp).getTime()
         : Number(rawServerTimestamp);
 
-      // Create user message representation with updated serverTimestamp and success status
+      // Create user message representation with updated serverTimestamp and success status.
+      // Adopt the server id when the backend returns one (#266).
+      const serverId = response.result.userMessageId;
       const userMessage: ChatMessage = {
-        id: tempId,
+        id: serverId ?? tempId,
         type: 'user',
         content: query,
         timestamp: new Date(serverTimestamp).toISOString(),
         serverTimestamp: serverTimestamp,
         metadata: {
           status: 'success',
+          delivery: 'sent',
+          serverId,
           clientTimestamp: clientTimestamp,
           serverTimestamp: serverTimestamp,
           optimisticId: tempId,
@@ -299,6 +515,14 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
+          // Failed replies carry what a retry needs (#262); every reply keeps the request id (#274)
+          ...(response.result.success === false
+            ? retryMetadata(query, tempId, response.result.requestId ?? clientRequestId, response.result.errorKind ?? 'unknown')
+            : {
+                errorKind: response.result.errorKind,
+                requestId: response.result.requestId ?? clientRequestId,
+                stateChanging: response.result.stateChanging,
+              }),
           executionTrace: response.result.executionTrace,
           serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
@@ -308,11 +532,61 @@ export const sendMessage = createAsyncThunk(
 
       return { response, conversation, userMessage, agentMessage, tempId };
     } catch (error: any) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
       const errorMsg =
         error.response?.data?.message ||
         error.message ||
         "Failed to send message";
       return rejectWithValue(errorMsg);
+    }
+  },
+);
+
+export const regenerateLastResponse = createAsyncThunk(
+  "chat/regenerateLastResponse",
+  async (_, { getState, rejectWithValue, signal }) => {
+    const state = getState() as any;
+    if (state.chat.isTyping || state.chat.isLoading) {
+      return rejectWithValue("busy");
+    }
+    if (state.chat.currentConversation && state.chat.currentConversation.isActive === false) {
+      return rejectWithValue("inactive");
+    }
+    const messages: ChatMessage[] = state.chat.messages;
+    const lastAgent = [...messages].reverse().find((message) => message.type === "agent");
+    if (!lastAgent) {
+      return rejectWithValue("no agent message");
+    }
+    const agentIndex = messages.findIndex((message) => message.id === lastAgent.id);
+    const precedingUser = [...messages.slice(0, agentIndex)]
+      .reverse()
+      .find((message) => message.type === "user");
+    if (!precedingUser) {
+      return rejectWithValue("no user message");
+    }
+    const userId = state.auth.user?.id;
+    if (!userId) {
+      return rejectWithValue("User not authenticated");
+    }
+    try {
+      const response = await apiService.queryAgent(
+        { userId, query: String(precedingUser.content) },
+        { signal },
+      );
+      return {
+        agentId: lastAgent.id,
+        content: response.result.data,
+        response,
+      };
+    } catch (error: unknown) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
+      return rejectWithValue(
+        error instanceof Error ? error.message : "Failed to regenerate message",
+      );
     }
   },
 );
@@ -617,6 +891,15 @@ const chatSlice = createSlice({
     },
     deleteConversationLocally: (state, action: PayloadAction<string>) => {
       const conversationId = action.payload;
+      // Deleting the open conversation also clears its view and any pending request state (#269)
+      if (state.currentConversation?.id === conversationId) {
+        state.currentConversation = null;
+        state.messages = [];
+        state.isLoading = false;
+        state.isTyping = false;
+        state.pendingMessages = new Set();
+        state.optimisticUpdates = new Map();
+      }
       state.conversations = state.conversations.filter(
         (conv) => conv.id !== conversationId,
       );
@@ -767,6 +1050,31 @@ const chatSlice = createSlice({
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /** Move a user message to another delivery state if the transition is allowed (#266). */
+    setMessageDelivery: (state, action: PayloadAction<{ id: string; delivery: DeliveryState }>) => {
+      const message = state.messages.find((m) => m.id === action.payload.id);
+      if (message) transitionDelivery(message, action.payload.delivery);
+    },
+    /**
+     * Replace the in-flight streamed text (#261). `text` is the full text so far, so repeated
+     * deltas are idempotent. Deltas for a request that already settled or was cancelled are ignored.
+     */
+    streamingDelta: (state, action: PayloadAction<{ requestId: string; text: string }>) => {
+      if (state.streamingResponse?.requestId === action.payload.requestId) {
+        state.streamingResponse.text = action.payload.text;
+      }
+    },
+    /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
+    mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
+      state.messages = mergeIncomingMessages(state.messages, action.payload);
+      for (const message of action.payload) {
+        const optimisticId = message.metadata?.optimisticId ?? message.metadata?.tempId;
+        if (optimisticId) {
+          state.optimisticUpdates.delete(optimisticId);
+          state.pendingMessages.delete(optimisticId);
+        }
+      }
+    },
     resolveOptimisticUpdate: (
       state,
       action: PayloadAction<{ clientId: string; serverMessage: ChatMessage }>,
@@ -783,6 +1091,54 @@ const chatSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      // Drop the previous user's chat data from memory on logout; storage is cleared by
+      // clearUserScopedStorage (#256). Online status is device state and is kept.
+      .addCase(logout.fulfilled, (state) => ({
+        ...initialState,
+        isOnline: state.isOnline,
+        pendingMessages: new Set<string>(),
+        optimisticUpdates: new Map<string, ChatMessage>(),
+      }))
+      .addCase(fetchChatHistory.pending, (state) => {
+        state.historyStatus = "loading";
+        state.historyError = null;
+      })
+      .addCase(fetchChatHistory.fulfilled, (state, action) => {
+        state.historyStatus = "succeeded";
+        state.messages = mergeMessagesById(state.messages, action.payload.messages);
+        state.historyCursor = action.payload.nextCursor;
+        state.historyHasMore = action.payload.hasMore;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.pending, (state) => {
+        state.isLoadingOlderHistory = true;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.fulfilled, (state, action) => {
+        const { page, cursor } = action.payload;
+        state.isLoadingOlderHistory = false;
+        // Merge by id: duplicate or overlapping pages never create duplicate rows,
+        // and sorting puts out-of-order pages back in chronological order.
+        state.messages = mergeMessagesById(state.messages, page.messages);
+
+        // Only advance from the cursor this page was requested with. A late response for an
+        // older cursor (e.g. after a refresh) must not move the cursor backwards.
+        if (state.historyCursor === cursor) {
+          // A server returning the same cursor would loop forever; treat it as the end
+          const stuck = page.nextCursor === cursor;
+          state.historyCursor = stuck ? null : page.nextCursor;
+          state.historyHasMore = !stuck && page.hasMore;
+        }
+      })
+      .addCase(loadOlderHistory.rejected, (state, action) => {
+        state.isLoadingOlderHistory = false;
+        state.olderHistoryError = (action.payload as string) ?? action.error.message ?? "Failed to load older messages";
+      })
+      .addCase(fetchChatHistory.rejected, (state, action) => {
+        // Keep cached messages; only record the failure
+        state.historyStatus = "failed";
+        state.historyError = (action.payload as string) ?? action.error.message ?? "Failed to load chat history";
+      })
       // Removed server conversation extraReducers - now handled client-side
 
       // Get or Create Active Conversation
@@ -806,6 +1162,7 @@ const chatSlice = createSlice({
         state.isLoading = true;
         state.isTyping = true;
         state.error = null;
+        state.streamingResponse = { requestId: action.meta.requestId, text: "" };
 
         const query = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
@@ -827,6 +1184,7 @@ const chatSlice = createSlice({
             timestamp: new Date(clientTimestamp).toISOString(),
             metadata: {
               status: 'pending',
+              delivery: 'sending',
               clientTimestamp: clientTimestamp,
               optimisticId: tempId,
               tempId: tempId,
@@ -834,20 +1192,28 @@ const chatSlice = createSlice({
           };
           state.messages.push(optimisticUserMessage);
           state.messages = sortMessagesChronologically(state.messages);
+        } else {
+          // A queued, failed or retried message being (re)sent: reuse its row (#266, #262).
+          // The delivery state only moves where the state machine allows (a `sent` row stays sent).
+          const existing = state.messages.find(
+            m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
+          );
+          if (existing) {
+            transitionDelivery(existing, 'sending');
+            existing.metadata = { ...existing.metadata, error: undefined };
+          }
         }
+        state.pendingMessages.add(tempId);
       })
       .addCase(sendMessage.fulfilled, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
-        const currentConversation = state.currentConversation;
-        state.currentConversation = currentConversation?.id === action.payload.conversation.id
-          ? {
-            ...action.payload.conversation,
-            title: isUntitledConversation(currentConversation)
-              ? action.payload.conversation.title
-              : currentConversation.title,
-          }
-          : action.payload.conversation;
+        state.currentConversation = action.payload.conversation;
+        // The final agent message replaces the streamed preview in the same update, so the
+        // reply is never shown twice (#261)
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
 
         // Debug logging to see what the server is returning
         logger.debug("[ChatSlice] Full response:", action.payload.response);
@@ -892,7 +1258,23 @@ const chatSlice = createSlice({
             m.metadata?.tempId === tempId,
         );
 
-        if (optimisticIdx !== -1 && userMessage) {
+        // The server copy may already be present (e.g. via a socket event or history load):
+        // keep one row only (#266)
+        const serverIdx = userMessage?.metadata?.serverId
+          ? state.messages.findIndex((m, i) => i !== optimisticIdx && m.id === userMessage.metadata!.serverId)
+          : -1;
+
+        state.pendingMessages.delete(tempId);
+        state.optimisticUpdates.delete(tempId);
+
+        if (serverIdx !== -1 && userMessage) {
+          state.messages[serverIdx] = {
+            ...state.messages[serverIdx],
+            ...userMessage,
+            metadata: { ...state.messages[serverIdx].metadata, ...userMessage.metadata, delivery: 'sent', status: 'success' },
+          };
+          if (optimisticIdx !== -1) state.messages.splice(optimisticIdx, 1);
+        } else if (optimisticIdx !== -1 && userMessage) {
           state.messages[optimisticIdx] = {
             ...state.messages[optimisticIdx],
             ...userMessage,
@@ -929,7 +1311,15 @@ const chatSlice = createSlice({
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
-        state.error = action.payload as string;
+        // Drop the streamed preview for this request, whatever the outcome (#261)
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
+
+        // The conversation was deleted mid-request: nothing to show or mark as failed (#269)
+        if (action.payload === CONVERSATION_DELETED) {
+          return;
+        }
 
         const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId
@@ -940,10 +1330,27 @@ const chatSlice = createSlice({
           m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
         );
 
+        state.pendingMessages.delete(tempId);
+        if (action.payload === ABORT_ERROR || action.meta.aborted) {
+          state.error = null;
+          if (optimisticIdx !== -1) {
+            state.messages[optimisticIdx].metadata = {
+              ...state.messages[optimisticIdx].metadata,
+              status: "cancelled",
+              // Cancelled by the user: no delivery badge rather than a stuck "Sending..." (#266)
+              delivery: undefined,
+            };
+          }
+          return;
+        }
+
+        state.error = action.payload as string;
+
         if (optimisticIdx !== -1) {
+          // sending → failed; retry is offered only in this state (#266)
+          transitionDelivery(state.messages[optimisticIdx], 'failed');
           state.messages[optimisticIdx].metadata = {
             ...state.messages[optimisticIdx].metadata,
-            status: 'failed',
             error: String(action.payload),
           };
         }
@@ -966,6 +1373,7 @@ const chatSlice = createSlice({
           friendlyMessage = "Please log in to continue the conversation.";
         }
 
+        const failedQuery = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const errorMessage: ChatMessage = {
           id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: "agent",
@@ -977,10 +1385,53 @@ const chatSlice = createSlice({
             type: "error",
             status: "failed",
             error: errorContent,
+            ...retryMetadata(
+              failedQuery,
+              tempId,
+              clientRequestIdFor(action.meta.arg, action.meta.requestId),
+              classifyAgentError({ message: errorContent }),
+            ),
+            // If the user's message never reached the service, its own "Not sent" Retry (#266)
+            // handles the resend; don't offer a second retry on this error reply (#262)
+            ...(optimisticIdx !== -1 && getDeliveryState(state.messages[optimisticIdx]) === 'failed'
+              ? { retryable: false }
+              : {}),
           },
         };
         state.messages.push(errorMessage);
         state.messages = sortMessagesChronologically(state.messages);
+      })
+      .addCase(regenerateLastResponse.pending, (state) => {
+        state.isLoading = true;
+        state.isTyping = true;
+        state.error = null;
+      })
+      .addCase(regenerateLastResponse.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        const index = state.messages.findIndex((message) => message.id === action.payload.agentId);
+        if (index !== -1) {
+          state.messages[index] = {
+            ...state.messages[index],
+            content: action.payload.content,
+            metadata: {
+              ...state.messages[index].metadata,
+              status: "success",
+              success: action.payload.response.result.success,
+              error: action.payload.response.result.error,
+              executionTrace: action.payload.response.result.executionTrace,
+            },
+          };
+        }
+      })
+      .addCase(regenerateLastResponse.rejected, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        if (action.payload === ABORT_ERROR || action.payload === "busy" || action.payload === "inactive") {
+          state.error = null;
+          return;
+        }
+        state.error = action.payload as string;
       })
 
       // ── sendVoiceMessage ───────────────────────────────────────────────────
@@ -1049,5 +1500,8 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  setMessageDelivery,
+  streamingDelta,
+  mergeSyncedMessages,
 } = chatSlice.actions;
 export default chatSlice.reducer;
