@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAppDispatch, useAppSelector } from '@/store';
+import { useAppSelector } from '@/store';
 import { ChatLayout } from '@/components/layout/ChatLayout';
 import { ConversationHistoryView } from '@/components/chat/ConversationHistoryView';
 import { fetchChatHistory, loadOlderHistory } from '@/store/slices/chatSlice';

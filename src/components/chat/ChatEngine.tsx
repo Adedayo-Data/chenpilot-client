@@ -23,6 +23,7 @@ import agentConfig from "@/config/agent";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
+import { ChatComposerField } from "@/components/chat/ChatComposerField";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
 import { useChatResync } from "@/hooks/useChatResync";
 import {
@@ -544,19 +545,13 @@ export const ChatEngine: React.FC = () => {
       className={`w-full ${isSticky ? "max-w-4xl mx-auto px-4 py-6" : "max-w-3xl mb-8"}`}
     >
       <div className="relative bg-[#1A1A2E] rounded-2xl p-6 border border-gray-800/50 shadow-xl">
-        <input
-          ref={inputRef}
+        <ChatComposerField
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSendMessage();
-            }
-          }}
+          onChange={setInputValue}
+          onSend={() => handleSendMessage()}
+          onEscape={handleComposerEscape}
           placeholder={isRecording ? "Listening..." : "Ask ChenPilot..."}
           disabled={isRecording}
-          className="w-full bg-transparent border-none text-white placeholder:text-gray-500 focus:outline-none text-lg mb-4"
         />
 
         {isRecording && (
