@@ -1,42 +1,106 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useId } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
-import { SendPaymentRequest, ContactSelection } from '@/types';
+import { SendPaymentRequest, ContactSelection, Contact } from '@/types';
+import { SUPPORTED_ASSETS } from '@/types';
+import React, { useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
+import { Contact, PaymentStatusResult, PaymentSubmissionResult, SendPaymentRequest, ContactSelection } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
+import { StellarNetworkBadge } from '@/components/wallet/StellarNetworkBadge';
+import { createPaymentIdempotencyKey, isPaymentOutcomeUnknown } from '@/utils/paymentOutcome';
 import ContactPicker from './ContactPicker';
 import {
   Send,
   User,
   X,
-  ChevronDown,
   Loader2,
+  AlertTriangle,
   CheckCircle,
   AlertCircle,
+  Copy,
+  Clock3,
+  ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { calculateSpendableNativeBalance } from '@/utils/nativeBalance';
 import toast from 'react-hot-toast';
 
 interface SendPaymentFormProps {
   onSubmit: (data: SendPaymentRequest) => Promise<void>;
-  contacts: any[];
+  contacts: Contact[];
+  isLoading?: boolean;
+  defaultTokenType?: typeof SUPPORTED_ASSETS[number];
+  /**
+   * The address of the currently signed-in wallet.  When provided the form
+   * will warn the user if they try to send to themselves.  The warning is
+   * advisory only — the user can still submit after acknowledging it.
+   * Server-side authorisation must never rely on this client-side check.
+   */
+  senderAddress?: string;
+}
+
+/**
+ * Normalise a Stellar-style address for comparison:
+ * trim whitespace and convert to upper-case.
+ * Never use this to authorise a transaction; it is a UX hint only.
+ */
+function normalizeAddress(addr: string): string {
+  return addr.trim().toUpperCase();
+  onSubmit: (data: SendPaymentRequest, idempotencyKey: string) => Promise<PaymentSubmissionResult>;
+  onCheckStatus: (idempotencyKey: string) => Promise<PaymentStatusResult>;
+  contacts: Contact[];
+  isOnline: boolean;
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  nativeBalance?: string;
+  requiredReserve?: string;
+  availableBalance?: number | string;
 }
 
 export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   onSubmit,
+  onCheckStatus,
   contacts,
+  isOnline,
   isLoading = false,
   defaultTokenType = 'XLM',
+  senderAddress,
+  nativeBalance,
+  requiredReserve,
+  availableBalance,
 }) => {
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  /**
+   * `isSelfTransfer` is true when the entered recipient address matches the
+   * signed-in wallet's address.  It is surfaced as a field-level warning, not
+   * an error, because some backends legitimately allow self-transfers (e.g.
+   * for account consolidation or testing).  The user must explicitly
+   * acknowledge the warning before they can submit the form.
+   */
+  const [isSelfTransfer, setIsSelfTransfer] = useState(false);
+  const [selfTransferAcknowledged, setSelfTransferAcknowledged] = useState(false);
+
+  // Unique IDs for ARIA wiring
+  const selfTransferWarningId = useId();
+  const recipientFieldId = useId();
+  const [reviewPayment, setReviewPayment] = useState<SendPaymentRequest | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const [paymentPhase, setPaymentPhase] = useState<'editing' | 'review' | 'pending' | 'completed' | 'failed' | 'uncertain'>('editing');
+  const [paymentResult, setPaymentResult] = useState<PaymentSubmissionResult | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [statusCheckMessage, setStatusCheckMessage] = useState<string | null>(null);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
 
   const {
     register,
@@ -53,67 +117,344 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     },
   });
 
+  // Preselect contact when initialContactId is provided and contacts are loaded
+  useEffect(() => {
+    if (!initialContactId || contacts.length === 0 || selectedContact) return;
+    const match = contacts.find((c) => c.id === initialContactId);
+    if (match) {
+      const selection: ContactSelection = {
+        id: match.id,
+        name: match.name,
+        address: match.address,
+        tokenType: match.tokenType,
+        avatar: match.avatar,
+        isFavorite: match.isFavorite,
+        lastUsed: match.lastUsed,
+      };
+      setSelectedContact(selection);
+      setValue('recipientAddress', selection.address);
+      setValue('tokenType', selection.tokenType);
+    }
+  }, [initialContactId, contacts, selectedContact, setValue]);
+
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const nativeBalanceValue = Number(nativeBalance);
+  const requiredReserveValue = Number(requiredReserve);
+  const spendableBalance = nativeBalance !== undefined && requiredReserve !== undefined
+    ? calculateSpendableNativeBalance(nativeBalance, requiredReserve)
+    : null;
+  const watchedAmount = watch('amount') || '';
+  const recipientAddressValue = watch('recipientAddress') || '';
+  const assetPrecision = getAssetPrecision(watchedToken);
+  const amountStep = assetPrecision > 0 ? `0.${'0'.repeat(assetPrecision - 1)}1` : '1';
+  const numericAvailableBalance = Number(availableBalance ?? 0);
+  const hasInsufficientBalance =
+    watchedToken === 'XLM' &&
+    watchedAmount !== '' &&
+    !Number.isNaN(Number(watchedAmount)) &&
+    Number(watchedAmount) > numericAvailableBalance &&
+    Number.isFinite(numericAvailableBalance);
+
+  const safeCopyText = async (text: string) => {
+    if (!text) {
+      toast.error('There is no recipient address to copy.');
+      return;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast.success('Recipient address copied to clipboard.');
+        return;
+      }
+    } catch {
+      // fall through to explicit fallback below
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      toast.success('Recipient address copied to clipboard.');
+      return;
+    } catch {
+      toast.error('Unable to copy the recipient address in this browser.');
+    }
+  };
+
+  // Check self-transfer on every address field change
+  const handleRecipientChange = (value: string) => {
+    if (senderAddress && value.trim().length > 0) {
+      const isSelf =
+        normalizeAddress(value) === normalizeAddress(senderAddress);
+      setIsSelfTransfer(isSelf);
+      if (!isSelf) setSelfTransferAcknowledged(false);
+    } else {
+      setIsSelfTransfer(false);
+      setSelfTransferAcknowledged(false);
+    }
+  };
 
   const handleContactSelect = (contact: ContactSelection) => {
     setSelectedContact(contact);
     setValue('recipientAddress', contact.address);
     setValue('tokenType', contact.tokenType);
+    handleRecipientChange(contact.address);
+
+    // Prefill memo preset only when the contact carries one.
+    // The user remains free to edit or clear these values before submitting.
+    if (contact.defaultMemo && contact.defaultMemoType && contact.defaultMemoType !== 'none') {
+      setValue('memo', contact.defaultMemo);
+      setValue('memoType', contact.defaultMemoType);
+    } else {
+      setValue('memo', '');
+      setValue('memoType', 'none');
+    }
+
     toast.success(`Selected ${contact.name}`);
   };
 
   const handleClearContact = () => {
     setSelectedContact(null);
     setValue('recipientAddress', '');
+    setIsSelfTransfer(false);
+    setSelfTransferAcknowledged(false);
+  };
+
+  const getActiveIdempotencyKey = (data: SendPaymentRequest): string => {
+    const requestFromForm = {
+      recipientAddress: data.recipientAddress?.trim() ?? '',
+      amount: data.amount?.trim() ?? '',
+      tokenType: data.tokenType ?? '',
+      memo: data.memo?.trim() ?? '',
+      memoType: data.memoType ?? 'none',
+      recipientContactId: data.recipientContactId ?? selectedContact?.id ?? '',
+    };
+    const signature = JSON.stringify(requestFromForm);
+
+    if (paymentAttemptSignatureRef.current === signature && paymentAttemptKeyRef.current) {
+      return paymentAttemptKeyRef.current;
+    }
+
+    const nextKey = buildPaymentIdempotencyKey(requestFromForm);
+    paymentAttemptSignatureRef.current = signature;
+    paymentAttemptKeyRef.current = nextKey;
+    return nextKey;
   };
 
   const handleFormSubmit = async (data: SendPaymentRequest) => {
+    // Guard: warn user about self-transfer but allow them to proceed after
+    // acknowledging.  This is a UX safeguard only — the backend is the
+    // authoritative check.
+    if (isSelfTransfer && !selfTransferAcknowledged) {
+      toast.error('Please read and acknowledge the self-transfer warning before sending.');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
-      
+
       // Sanitize input
       const sanitizedData = sanitizePaymentInput(data);
-      
+
       // Add contact reference if selected
       if (selectedContact) {
         sanitizedData.recipientContactId = selectedContact.id;
       }
-      
-      // Validate again (defensive programming)
+
+      // Defensive re-validation after sanitization
       const validation = validateSendPayment(sanitizedData);
       if (!validation.isValid) {
+        setFocus('recipientAddress');
         validation.errors.forEach((error) => toast.error(error));
         return;
       }
-      
+
       await onSubmit(sanitizedData);
-      
+
       // Reset form on success
       reset();
       setSelectedContact(null);
-    } catch (error: any) {
+      setIsSelfTransfer(false);
+      setSelfTransferAcknowledged(false);
+    } catch (error: unknown) {
       console.error('Payment submission error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      toast.error((error as { message?: string })?.message || 'Failed to send payment');
+      setFocus('recipientAddress');
+      toast.error(getPaymentFailureMessage(error));
+  const handleFormSubmit = (data: SendPaymentRequest) => {
+    const sanitizedData = sanitizePaymentInput(data);
+    if (selectedContact) {
+      sanitizedData.recipientContactId = selectedContact.id;
+    }
+
+    const validation = validateSendPayment(sanitizedData);
+    if (!validation.isValid) {
+      validation.errors.forEach((error) => toast.error(error));
+      return;
+    }
+
+    setReviewPayment(sanitizedData);
+    setIdempotencyKey(createPaymentIdempotencyKey());
+    setPaymentError(null);
+    setPaymentPhase('review');
+  };
+
+  const confirmPayment = async () => {
+    if (!reviewPayment || !idempotencyKey) return;
+
+    setIsSubmitting(true);
+    setPaymentError(null);
+    try {
+      const result = await onSubmit(reviewPayment, idempotencyKey);
+      setPaymentResult(result);
+      setPaymentPhase(
+        result.status === 'confirmed' ? 'completed' : result.status === 'failed' ? 'failed' : 'pending',
+      );
+    } catch (error: unknown) {
+      console.error('Payment submission error:', error);
+      if (isPaymentOutcomeUnknown(error)) {
+        setPaymentError(error instanceof Error ? error.message : 'Payment outcome is unknown.');
+        setPaymentPhase('uncertain');
+      } else {
+        const message = error instanceof Error ? error.message : 'Failed to submit payment.';
+        setPaymentError(message);
+        setReviewPayment(null);
+        setIdempotencyKey(null);
+        setPaymentPhase('editing');
+        toast.error(message);
+      }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const getContactDisplayName = () => {
-    if (selectedContact) {
-      return (
-        <div className="flex items-center space-x-2">
-          <User className="h-4 w-4 text-blue-400" />
-          <span className="text-blue-400">{selectedContact.name}</span>
-        </div>
-      );
+  const checkPaymentStatus = async () => {
+    if (!idempotencyKey) return;
+
+    setIsCheckingStatus(true);
+    setStatusCheckMessage(null);
+    try {
+      const result = await onCheckStatus(idempotencyKey);
+      if (result.status === 'confirmed') {
+        setPaymentResult(result);
+        setPaymentPhase('completed');
+      } else if (result.status === 'failed') {
+        setPaymentResult(result);
+        setPaymentPhase('failed');
+      } else if (result.status === 'pending' || result.status === 'submitted') {
+        setPaymentResult(result);
+        setPaymentPhase('pending');
+      } else {
+        setStatusCheckMessage('No final status is available yet. Keep this screen open and check again; do not resend the payment.');
+      }
+    } catch {
+      setStatusCheckMessage('Status could not be retrieved. The payment may still have been submitted; check again before taking further action.');
+    } finally {
+      setIsCheckingStatus(false);
     }
-    return 'Select from contacts';
   };
+
+  const startFreshPayment = () => {
+    reset({ tokenType: defaultTokenType, memoType: 'none' });
+    setSelectedContact(null);
+    setReviewPayment(null);
+    setIdempotencyKey(null);
+    setPaymentResult(null);
+    setPaymentError(null);
+    setStatusCheckMessage(null);
+    setPaymentPhase('editing');
+  };
+
+  if (paymentPhase === 'pending' || paymentPhase === 'completed' || paymentPhase === 'failed' || paymentPhase === 'uncertain') {
+    const transactionReference = paymentResult?.transactionHash ?? paymentResult?.transactionId;
+
+    return (
+      <Card className="space-y-5 border border-gray-700 bg-gray-950 p-6 text-white">
+        <div className="flex items-start gap-3">
+          {paymentPhase === 'completed' ? (
+            <CheckCircle className="mt-0.5 h-5 w-5 text-emerald-400" />
+          ) : paymentPhase === 'pending' ? (
+            <Clock3 className="mt-0.5 h-5 w-5 text-amber-300" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-300" />
+          )}
+          <div>
+            <h2 className="text-lg font-semibold">
+              {paymentPhase === 'completed' ? 'Payment confirmed' : paymentPhase === 'failed' ? 'Payment failed' : paymentPhase === 'pending' ? 'Payment submitted' : 'Payment status unknown'}
+            </h2>
+            <p className="mt-1 text-sm text-gray-300">
+              {paymentPhase === 'completed'
+                ? 'The server confirmed this payment.'
+                : paymentPhase === 'failed'
+                  ? paymentResult?.message ?? 'The server confirmed that this payment failed.'
+                : paymentPhase === 'pending'
+                  ? 'The server accepted this payment. Check its status for confirmation.'
+                  : paymentError ?? 'We could not determine whether the payment was submitted.'}
+            </p>
+          </div>
+        </div>
+
+        {reviewPayment && (
+          <dl className="grid gap-3 border-y border-gray-800 py-4 text-sm sm:grid-cols-2">
+            <div><dt className="text-gray-400">Recipient</dt><dd className="break-all font-mono text-gray-100">{reviewPayment.recipientAddress}</dd></div>
+            <div><dt className="text-gray-400">Amount</dt><dd className="text-gray-100">{reviewPayment.amount} {reviewPayment.tokenType}</dd></div>
+          </dl>
+        )}
+
+        {transactionReference && (
+          <div className="space-y-1 text-sm">
+            <p className="text-gray-400">Transaction reference</p>
+            <p className="break-all font-mono text-gray-100">{transactionReference}</p>
+          </div>
+        )}
+
+        {(paymentPhase === 'pending' || paymentPhase === 'uncertain') && (
+          <div className="space-y-3">
+            {statusCheckMessage && <p role="status" className="text-sm text-amber-200">{statusCheckMessage}</p>}
+            <Button type="button" onClick={checkPaymentStatus} disabled={isCheckingStatus}>
+              {isCheckingStatus ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+              Check payment status
+            </Button>
+          </div>
+        )}
+
+        {(paymentPhase === 'completed' || paymentPhase === 'failed') && (
+          <Button type="button" onClick={startFreshPayment}>Start a new payment</Button>
+        )}
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
+      {spendableBalance !== null && (
+        <Card className="p-4" aria-label="Native XLM balance">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-gray-400">Total XLM</p>
+              <p className="font-semibold text-white">{nativeBalanceValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400">Spendable after reserve</p>
+              <p className="font-semibold text-white">{spendableBalance.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+          </div>
+          {requiredReserveValue > 0 && (
+            <p className="mt-2 text-xs text-gray-400">
+              Keep at least {requiredReserveValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM in your account for its minimum reserve.
+            </p>
+          )}
+        </Card>
+      )}
+
       {/* Contact Selection */}
       <Card className="p-4">
         <div className="flex items-center justify-between mb-4">
@@ -124,7 +465,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             onClick={() => setIsContactPickerOpen(true)}
             className="text-blue-400 hover:text-blue-300"
           >
-            <User className="h-4 w-4 mr-1" />
+            <User className="h-4 w-4 mr-1" aria-hidden="true" />
             Select Contact
           </Button>
         </div>
@@ -132,12 +473,20 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
         {selectedContact ? (
           <div className="flex items-center justify-between p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-sm">
+              <div
+                aria-hidden="true"
+                className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-sm"
+              >
                 {selectedContact.name.slice(0, 2).toUpperCase()}
               </div>
               <div>
                 <p className="font-medium text-white">{selectedContact.name}</p>
                 <p className="text-xs text-gray-400">{selectedContact.tokenType}</p>
+                {selectedContact.defaultMemo && selectedContact.defaultMemoType && selectedContact.defaultMemoType !== 'none' && (
+                  <p className="text-xs text-blue-300 mt-0.5">
+                    Memo preset applied — you can edit it below
+                  </p>
+                )}
               </div>
             </div>
             <Button
@@ -145,8 +494,9 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
               size="sm"
               onClick={handleClearContact}
               className="text-gray-400 hover:text-white"
+              aria-label={`Remove ${selectedContact.name} as recipient`}
             >
-              <X className="h-4 w-4" />
+              <X className="h-4 w-4" aria-hidden="true" />
             </Button>
           </div>
         ) : (
@@ -158,25 +508,116 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
       {/* Payment Form */}
       <Card className="p-6">
-        <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6">
+        <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-6" noValidate>
           {/* Recipient Address */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
+            <label
+              htmlFor={recipientFieldId}
+              className="block text-sm font-medium text-gray-300 mb-2"
+            >
               Recipient Address
             </label>
             <Input
-              {...register('recipientAddress')}
+              id={recipientFieldId}
+              {...register('recipientAddress', {
+                onChange: (e) => handleRecipientChange(e.target.value),
+              })}
               placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
               className={cn(
                 'font-mono text-sm',
-                selectedContact && 'bg-blue-500/5 border-blue-500/30'
+                selectedContact && 'bg-blue-500/5 border-blue-500/30',
+                isSelfTransfer && 'border-yellow-500/70'
               )}
               disabled={!!selectedContact}
+              aria-invalid={!!errors.recipientAddress || isSelfTransfer}
+              aria-describedby={
+                [
+                  errors.recipientAddress ? `${recipientFieldId}-error` : null,
+                  isSelfTransfer ? selfTransferWarningId : null,
+                ]
+                  .filter(Boolean)
+                  .join(' ') || undefined
+              }
             />
+            <div className="flex gap-2">
+              <Input
+                {...register('recipientAddress')}
+                placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+                className={cn(
+                  'font-mono text-sm flex-1',
+                  selectedContact && 'bg-blue-500/5 border-blue-500/30'
+                )}
+                disabled={!!selectedContact}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => safeCopyText(recipientAddressValue)}
+                className="whitespace-nowrap"
+                disabled={!recipientAddressValue}
+              >
+                <Copy className="h-4 w-4 mr-1" />
+                Copy
+              </Button>
+            </div>
             {errors.recipientAddress && (
-              <p className="mt-1 text-xs text-red-400">{errors.recipientAddress.message}</p>
+              <p
+                id={`${recipientFieldId}-error`}
+                role="alert"
+                className="mt-1 text-xs text-red-400"
+              >
+                {errors.recipientAddress.message}
+              </p>
+            )}
+
+            {/* Self-transfer warning — advisory, not a hard block */}
+            {isSelfTransfer && (
+              <div
+                id={selfTransferWarningId}
+                role="alert"
+                className="mt-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/40 space-y-2"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    className="h-4 w-4 text-yellow-400 mt-0.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <p className="text-xs text-yellow-300">
+                    <strong>Sending to yourself?</strong> The recipient address
+                    matches your own wallet. Double-check before continuing — most
+                    self-transfers are accidental.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={selfTransferAcknowledged}
+                    onChange={(e) => setSelfTransferAcknowledged(e.target.checked)}
+                    className="rounded border-yellow-500 accent-yellow-400"
+                  />
+                  <span className="text-xs text-yellow-300">
+                    I intend to send to my own address and want to proceed.
+                  </span>
+                </label>
+              </div>
             )}
           </div>
+
+          {availableBalance !== undefined && watchedToken === 'XLM' && (
+            <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-400">Available balance</span>
+                <span className="font-medium text-white">{Number(availableBalance).toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</span>
+              </div>
+              {hasInsufficientBalance && (
+                <p className="mt-2 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Requested amount exceeds your available XLM balance.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Amount */}
           <div>
@@ -189,25 +630,37 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                 placeholder="0.00"
                 type="number"
                 step="0.0000001"
+                min="0"
+                step={amountStep}
                 className="flex-1"
               />
               <select
                 {...register('tokenType')}
                 className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="Token type"
               >
-                <option value="XLM">XLM</option>
-                <option value="USDC">USDC</option>
-                <option value="USDT">USDT</option>
-                <option value="BTC">BTC</option>
-                <option value="ETH">ETH</option>
-                <option value="AQUA">AQUA</option>
+                {SUPPORTED_ASSETS.map((token) => (
+                  <option key={token} value={token}>
+                    {token}
+                  </option>
+                ))}
               </select>
             </div>
             {errors.amount && (
-              <p className="mt-1 text-xs text-red-400">{errors.amount.message}</p>
+              <p role="alert" className="mt-1 text-xs text-red-400">
+                {errors.amount.message}
+              </p>
             )}
             {errors.tokenType && (
-              <p className="mt-1 text-xs text-red-400">{errors.tokenType.message}</p>
+              <p role="alert" className="mt-1 text-xs text-red-400">
+                {errors.tokenType.message}
+              </p>
+            )}
+            {hasInsufficientBalance && !errors.amount && (
+              <p className="mt-1 text-xs text-amber-300 flex items-center gap-1">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Insufficient funds for this XLM transfer.
+              </p>
             )}
           </div>
 
@@ -220,19 +673,20 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
               <select
                 {...register('memoType')}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="Memo type"
               >
                 <option value="none">No Memo</option>
                 <option value="text">Text Memo</option>
                 <option value="id">ID Memo</option>
                 <option value="hash">Hash Memo</option>
               </select>
-              
+
               {watchedMemoType !== 'none' && (
                 <Input
                   {...register('memo')}
                   placeholder={
                     watchedMemoType === 'text'
-                      ? 'Enter memo text (max 28 characters)'
+                      ? 'Enter memo text (max 28 UTF-8 bytes)'
                       : watchedMemoType === 'id'
                       ? 'Enter numeric ID'
                       : 'Enter 64-character hex hash'
@@ -241,34 +695,46 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                     'font-mono text-sm',
                     watchedMemoType === 'hash' && 'uppercase'
                   )}
-                  maxLength={watchedMemoType === 'hash' ? 64 : 28}
+                  maxLength={watchedMemoType === 'hash' ? 64 : watchedMemoType === 'id' ? 20 : 28}
                 />
               )}
             </div>
             {errors.memo && (
-              <p className="mt-1 text-xs text-red-400">{errors.memo.message}</p>
+              <p role="alert" className="mt-1 text-xs text-red-400">
+                {errors.memo.message}
+              </p>
             )}
             {errors.memoType && (
-              <p className="mt-1 text-xs text-red-400">{errors.memoType.message}</p>
+              <p role="alert" className="mt-1 text-xs text-red-400">
+                {errors.memoType.message}
+              </p>
             )}
           </div>
 
           {/* Submit Button */}
           <Button
             type="submit"
-            disabled={isSubmitting || isLoading}
+            disabled={
+              isSubmitting ||
+              isLoading ||
+              (isSelfTransfer && !selfTransferAcknowledged)
+            }
+            disabled={isSubmitting || isLoading || hasInsufficientBalance}
             className="w-full"
             size="lg"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" aria-hidden="true" />
                 Sending...
               </>
             ) : (
               <>
-                <Send className="h-4 w-4 mr-2" />
+                <Send className="h-4 w-4 mr-2" aria-hidden="true" />
                 Send Payment
+                <Send className="h-4 w-4 mr-2" />
+                {isOnline ? 'Send Payment' : 'Unavailable offline'}
+                Review Payment
               </>
             )}
           </Button>
@@ -283,6 +749,61 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
         isOpen={isContactPickerOpen}
         tokenType={watchedToken}
       />
+
+      <Modal
+        isOpen={paymentPhase === 'review' && !!reviewPayment}
+        onClose={() => {
+          if (!isSubmitting) {
+            setPaymentPhase('editing');
+            setReviewPayment(null);
+            setIdempotencyKey(null);
+          }
+        }}
+        title="Review payment"
+        className="border border-gray-700 bg-gray-950 text-white"
+        titleClassName="text-white"
+      >
+        {reviewPayment && (
+          <div className="space-y-5">
+            <dl className="space-y-4 text-sm">
+              <div>
+                <dt className="text-gray-400">Recipient</dt>
+                <dd className="mt-1 break-all font-mono text-gray-100">{reviewPayment.recipientAddress}</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-gray-400">Amount</dt>
+                <dd className="text-right font-semibold text-white">{reviewPayment.amount} {reviewPayment.tokenType}</dd>
+              </div>
+              <div>
+                <dt className="text-gray-400">Memo</dt>
+                <dd className="mt-1 break-all text-gray-100">
+                  {reviewPayment.memo ? `${reviewPayment.memo} (${reviewPayment.memoType ?? 'text'})` : 'No memo'}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-gray-400">Network</dt>
+                <dd><StellarNetworkBadge /></dd>
+              </div>
+            </dl>
+
+            {paymentError && <p role="alert" className="text-sm text-red-300">{paymentError}</p>}
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="ghost" onClick={() => {
+                setPaymentPhase('editing');
+                setReviewPayment(null);
+                setIdempotencyKey(null);
+              }} disabled={isSubmitting}>
+                Return to edit
+              </Button>
+              <Button type="button" onClick={confirmPayment} disabled={isSubmitting}>
+                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-2 h-4 w-4" />}
+                Confirm and send
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

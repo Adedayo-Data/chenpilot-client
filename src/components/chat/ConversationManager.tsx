@@ -4,13 +4,15 @@ import React, { useState, useMemo } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { addTag, removeTag, setSelectedTags, toggleConversationPin } from '@/store/slices/chatSlice';
 import { Conversation } from '@/types';
-import { X, Plus, Tag, Star } from 'lucide-react';
+import { X, Plus, Tag, Trash2 } from 'lucide-react';
 
 interface ConversationManagerProps {
   onSelectConversation?: (conversation: Conversation) => void;
+  /** Request deletion; the parent confirms and cancels in-flight work (#269). */
+  onDeleteConversation?: (conversation: Conversation) => void;
 }
 
-export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSelectConversation }) => {
+export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSelectConversation, onDeleteConversation }) => {
   const dispatch = useAppDispatch();
   const { conversations, selectedTags, currentConversation } = useAppSelector((state) => state.chat);
   const [newTag, setNewTag] = useState('');
@@ -126,6 +128,19 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
                   >
                     <Star className={`h-4 w-4 ${conversation.pinned ? "fill-amber-300 text-amber-300" : ""}`} />
                   </button>
+                  {onDeleteConversation && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteConversation(conversation);
+                      }}
+                      aria-label={`Delete ${conversation.title}`}
+                      className="ml-2 rounded p-1 text-gray-500 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Tags Display */}
