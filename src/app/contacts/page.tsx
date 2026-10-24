@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import {
@@ -8,6 +8,7 @@ import {
   createContact,
   updateContact,
   deleteContact,
+  importContacts,
   paginateContacts,
   filterContacts,
 } from '@/store/slices/contactsSlice';
@@ -17,8 +18,12 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Modal } from '@/components/ui/Modal';
 import { ChatLayout } from '@/components/layout/ChatLayout';
-import { Users, Plus, Search, Edit, Trash2, Copy, QrCode, Sparkles } from 'lucide-react';
+import { ImportPreviewModal } from '@/components/contacts/ImportPreviewModal';
+import { Users, Plus, Search, Edit, Trash2, Copy, QrCode, Upload } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
+import { validateContactAddress, normalizeContactAddress } from '@/utils/validation';
+import { parseImportFile } from '@/utils/contactsImport';
+import type { ContactsImportPreview, ValidImportRow } from '@/utils/contactsImport';
 import { Contact, CreateContactRequest } from '@/types';
 import { PAGINATION } from '@/constants';
 import { buildClipboardFallbackMessage, copyTextToClipboard } from '@/utils/clipboard';
@@ -39,18 +44,30 @@ export default function ContactsPage() {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [contactsPage, setContactsPage] = useState(1);
+
+  // Create modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  // Edit modal
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isAddressChangeConfirmationOpen, setIsAddressChangeConfirmationOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<CreateContactRequest>(createEmptyContactForm());
+  const [addressError, setAddressError] = useState<string | null>(null);
+
+  // Import state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<ContactsImportPreview | null>(null);
+  const [isImportPreviewOpen, setIsImportPreviewOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
+  /** Timer refs keyed by contact id so multiple undo windows can coexist. */
+  const undoTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/auth/login');
       return;
     }
-
     void dispatch(getContacts());
   }, [dispatch, isAuthenticated, router]);
 
@@ -59,53 +76,59 @@ export default function ContactsPage() {
   const currentContactsPage = Math.min(contactsPage, Math.max(1, pageCount));
   const visibleContacts = paginateContacts(filteredContacts, currentContactsPage);
 
+  const favoriteCount = contacts.filter((c) => c.isFavorite).length;
+
+  // ─── Create / Edit ───────────────────────────────────────────────────────────
+
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
-      await dispatch(createContact({
-        ...formData,
-        note: formData.note?.trim() || undefined,
-      })).unwrap();
+      await dispatch(createContact({ ...formData, note: formData.note?.trim() || undefined })).unwrap();
       toast.success('Contact created successfully!');
       setIsCreateModalOpen(false);
       setFormData(createEmptyContactForm());
-    } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to create contact');
-      toast.error(errorMessage);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to create contact');
+      if (typeof msg === 'string' && msg.includes('already uses this address')) {
+        setAddressError(msg);
+      } else {
+        toast.error(msg);
+      }
     }
   };
 
+  // ── Update ────────────────────────────────────────────────────────────────
   const persistContactUpdate = async () => {
     if (!editingContact) return;
-
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
       await dispatch(updateContact({
         id: editingContact.id,
-        data: {
-          ...formData,
-          note: formData.note?.trim() || undefined,
-        },
+        data: { ...formData, note: formData.note?.trim() || undefined },
       })).unwrap();
       toast.success('Contact updated successfully!');
       setIsEditModalOpen(false);
       setIsAddressChangeConfirmationOpen(false);
       setEditingContact(null);
       setFormData(createEmptyContactForm());
-    } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to update contact');
-      toast.error(errorMessage);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to update contact');
+      toast.error(msg);
     }
   };
 
   const handleUpdateContact = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingContact) return;
-
     if (formData.address.trim() !== editingContact.address) {
       setIsAddressChangeConfirmationOpen(true);
       return;
     }
-
     await persistContactUpdate();
   };
 
@@ -116,50 +139,57 @@ export default function ContactsPage() {
     setIsAddressChangeConfirmationOpen(false);
   };
 
+  // ── Delete ────────────────────────────────────────────────────────────────
   const handleDeleteContact = async (contact: Contact) => {
-    if (window.confirm(`Are you sure you want to delete ${contact.name}?`)) {
-      try {
-        await dispatch(deleteContact(contact.id)).unwrap();
-        toast.success('Contact deleted successfully!');
-      } catch (error: any) {
-        const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to delete contact');
-        toast.error(errorMessage);
-      }
+    if (!window.confirm(`Are you sure you want to delete ${contact.name}?`)) return;
+    try {
+      await dispatch(deleteContact(contact.id)).unwrap();
+      toast.success('Contact deleted successfully!');
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to delete contact');
+      toast.error(msg);
     }
   };
 
   const openEditModal = (contact: Contact) => {
     setEditingContact(contact);
-    setFormData({
-      name: contact.name,
-      address: contact.address,
-      tokenType: contact.tokenType,
-      note: contact.note ?? '',
-    });
+    setAddressError(null);
+    setFormData({ name: contact.name, address: contact.address, tokenType: contact.tokenType, note: contact.note ?? '' });
     setIsEditModalOpen(true);
     setIsAddressChangeConfirmationOpen(false);
   };
 
+  // ── Clipboard ─────────────────────────────────────────────────────────────
   const copyToClipboard = async (text: string, label: string) => {
     const result = await copyTextToClipboard(text, label);
-    if (result.ok) {
-      toast.success(`${label} copied to clipboard`);
-      return;
-    }
-
+    if (result.ok) { toast.success(`${label} copied to clipboard`); return; }
     toast.error(result.fallbackMessage || buildClipboardFallbackMessage(label));
   };
+
+  // ─── Loading gate ─────────────────────────────────────────────────────────────
 
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto" />
           <p className="mt-4 text-gray-300">Loading...</p>
         </div>
       </div>
     );
   }
+
+  const emptyTitle = showFavoritesOnly
+    ? 'No favorites yet'
+    : searchTerm
+    ? 'No contacts found'
+    : 'No contacts yet';
+
+  const emptyDescription = showFavoritesOnly
+    ? 'Star a contact to add it here.'
+    : searchTerm
+    ? 'Try another name or address.'
+    : 'Save a contact to make future transfers easier.';
 
   return (
     <ChatLayout>
@@ -487,7 +517,7 @@ export default function ContactsPage() {
       {/* Create Contact Modal */}
       <Modal
         isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
+        onClose={() => { setIsCreateModalOpen(false); setAddressError(null); }}
         title="Add New Contact"
       >
         <form onSubmit={handleCreateContact} className="space-y-4">
@@ -499,13 +529,25 @@ export default function ContactsPage() {
             required
           />
           
-          <Input
-            label="Address"
-            placeholder="Enter Stellar address"
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            required
-          />
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'create-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="create-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -526,7 +568,7 @@ export default function ContactsPage() {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setIsCreateModalOpen(false)}
+              onClick={() => { setIsDeleteModalOpen(false); setContactToDelete(null); }}
             >
               Cancel
             </Button>
@@ -580,13 +622,25 @@ export default function ContactsPage() {
             required
           />
           
-          <Input
-            label="Address"
-            placeholder="Enter Stellar address"
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            required
-          />
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'edit-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="edit-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -606,13 +660,11 @@ export default function ContactsPage() {
           <div className="flex justify-end space-x-3 pt-4">
             <Button
               type="button"
-              variant="secondary"
-              onClick={() => setIsEditModalOpen(false)}
+              variant="danger"
+              onClick={handleConfirmDelete}
+              data-testid="confirm-delete-btn"
             >
-              Cancel
-            </Button>
-            <Button type="submit">
-              Update Contact
+              Delete
             </Button>
           </div>
         </form>
