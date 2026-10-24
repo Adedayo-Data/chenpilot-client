@@ -22,6 +22,52 @@ import {
 import { Language } from "@/lib/i18n/i18n";
 import { RefreshCw, ReceiptText } from "lucide-react";
 
+// ---------------------------------------------------------------------------
+// Memo rendering helpers
+// ---------------------------------------------------------------------------
+
+/** Truncation limit for displayed memo values; full text is kept in title. */
+const MEMO_TRUNCATE_LEN = 40;
+
+function truncateMemo(value: string): string {
+  return value.length > MEMO_TRUNCATE_LEN
+    ? `${value.slice(0, MEMO_TRUNCATE_LEN)}…`
+    : value;
+}
+
+type MemoType = "text" | "id" | "hash" | "return" | undefined;
+
+function MemoDisplay({
+  memo,
+  memoType,
+}: {
+  memo: string | undefined;
+  memoType: MemoType;
+}) {
+  if (!memo || !memoType) return null;
+
+  const label: Record<NonNullable<MemoType>, string> = {
+    text: "Text",
+    id: "ID",
+    hash: "Hash",
+    return: "Return",
+  };
+
+  const tag = label[memoType] ?? memoType.toUpperCase();
+
+  return (
+    <div className="mt-2 flex items-start gap-2 text-xs">
+      <span className="shrink-0 rounded bg-gray-700 px-1.5 py-0.5 font-mono uppercase tracking-wide text-gray-300">
+        {tag}
+      </span>
+      <span
+        className="truncate text-gray-400"
+        title={memo}
+      >
+        {truncateMemo(memo)}
+      </span>
+    </div>
+  );
 /**
  * Format a timestamp for display, tolerating missing/invalid values so a bad
  * value never renders "Invalid Date" to the user.
@@ -243,6 +289,12 @@ export default function TransactionsPage() {
                 </div>
               </div>
 
+              <div className="space-y-2">
+                {tx.operations.map((op) => (
+                  <div
+                    key={op.id}
+                    className="flex justify-between items-center bg-gray-50 dark:bg-gray-800 p-2 rounded"
+                  >
           {/* No-match state */}
           {filtered.length === 0 ? (
             <Card className="text-center py-10">
@@ -286,6 +338,9 @@ export default function TransactionsPage() {
                       {tx.successful ? "Confirmed" : "Failed"}
                     </div>
                   </div>
+
+              {/* Memo — rendered only when present; distinct styles per type */}
+              <MemoDisplay memo={tx.memo} memoType={tx.memo_type} />
 
               <div className="mt-2 text-xs text-gray-500">
                 Fee: {formatTransactionFee(tx.fee_charged, { language, asset: "XLM" })} | Ledger:{" "}
