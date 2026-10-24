@@ -6,6 +6,8 @@ import { useAppDispatch, useAppSelector } from '@/store';
 import {
   createContact,
   deleteContact,
+  importContacts,
+  paginateContacts,
   filterContacts,
   getContacts,
   paginateContacts,
@@ -18,8 +20,13 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Modal } from '@/components/ui/Modal';
 import { ChatLayout } from '@/components/layout/ChatLayout';
 import { OfflineIndicator } from '@/components/chat/OfflineIndicator';
-import { Users, Plus, Search, Edit, Trash2, Copy } from 'lucide-react';
+
+import { ImportPreviewModal } from '@/components/contacts/ImportPreviewModal';
+import { Users, Plus, Search, Edit, Trash2, Copy, QrCode, Upload } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
+import { validateContactAddress, normalizeContactAddress } from '@/utils/validation';
+import { parseImportFile } from '@/utils/contactsImport';
+import type { ContactsImportPreview, ValidImportRow } from '@/utils/contactsImport';
 import { Contact, CreateContactRequest } from '@/types';
 import { PAGINATION } from '@/constants';
 import { buildClipboardFallbackMessage, copyTextToClipboard } from '@/utils/clipboard';
@@ -40,7 +47,10 @@ export default function ContactsPage() {
   const { list: contacts, isLoading } = useAppSelector((state) => state.contacts);
   const [searchTerm, setSearchTerm] = useState('');
   const [contactsPage, setContactsPage] = useState(1);
+
+  // Create modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  // Edit modal
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isAddressChangeConfirmationOpen, setIsAddressChangeConfirmationOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -48,6 +58,17 @@ export default function ContactsPage() {
   const createFormRef = useRef<HTMLFormElement>(null);
   const editFormRef = useRef<HTMLFormElement>(null);
   const [formData, setFormData] = useState<CreateContactRequest>(createEmptyContactForm);
+
+  const [addressError, setAddressError] = useState<string | null>(null);
+
+  // Import state
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<ContactsImportPreview | null>(null);
+  const [isImportPreviewOpen, setIsImportPreviewOpen] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
+  /** Timer refs keyed by contact id so multiple undo windows can coexist. */
+  const undoTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -66,11 +87,17 @@ export default function ContactsPage() {
   const visibleContacts = paginateContacts(filteredContacts, currentContactsPage);
 
   const submitCreateContact = async () => {
+  const favoriteCount = contacts.filter((c) => c.isFavorite).length;
+
+  // ─── Create / Edit ───────────────────────────────────────────────────────────
+
+  const handleCreateContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
-      await dispatch(createContact({
-        ...formData,
-        note: formData.note?.trim() || undefined,
-      })).unwrap();
+      await dispatch(createContact({ ...formData, note: formData.note?.trim() || undefined })).unwrap();
       toast.success('Contact created successfully!');
       setIsCreateModalOpen(false);
       setFormData(createEmptyContactForm());
@@ -88,10 +115,18 @@ export default function ContactsPage() {
     if (!isOnline) {
       setPendingContactAction('create');
       return;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to create contact');
+      if (typeof msg === 'string' && msg.includes('already uses this address')) {
+        setAddressError(msg);
+      } else {
+        toast.error(msg);
+      }
     }
     await submitCreateContact();
   };
 
+  // ── Update ────────────────────────────────────────────────────────────────
   const persistContactUpdate = async () => {
     if (!editingContact) return;
     if (!isOnline) {
@@ -99,13 +134,13 @@ export default function ContactsPage() {
       return;
     }
 
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
       await dispatch(updateContact({
         id: editingContact.id,
-        data: {
-          ...formData,
-          note: formData.note?.trim() || undefined,
-        },
+        data: { ...formData, note: formData.note?.trim() || undefined },
       })).unwrap();
       toast.success('Contact updated successfully!');
       setIsEditModalOpen(false);
@@ -163,19 +198,16 @@ export default function ContactsPage() {
       await dispatch(deleteContact(contact.id)).unwrap();
       toast.success('Contact deleted successfully!');
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : String(error || 'Failed to delete contact'));
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to delete contact');
+      toast.error(msg);
     }
   };
 
   const openEditModal = (contact: Contact) => {
     setPendingContactAction(null);
     setEditingContact(contact);
-    setFormData({
-      name: contact.name,
-      address: contact.address,
-      tokenType: contact.tokenType,
-      note: contact.note ?? '',
-    });
+    setAddressError(null);
+    setFormData({ name: contact.name, address: contact.address, tokenType: contact.tokenType, note: contact.note ?? '' });
     setIsEditModalOpen(true);
     setIsAddressChangeConfirmationOpen(false);
   };
@@ -189,6 +221,8 @@ export default function ContactsPage() {
     toast.error(result.fallbackMessage || buildClipboardFallbackMessage('Address'));
   };
 
+  // ─── Loading gate ─────────────────────────────────────────────────────────────
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -201,6 +235,17 @@ export default function ContactsPage() {
   }
 
   const tokenTypeOptions: CreateContactRequest['tokenType'][] = ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'];
+  const emptyTitle = showFavoritesOnly
+    ? 'No favorites yet'
+    : searchTerm
+    ? 'No contacts found'
+    : 'No contacts yet';
+
+  const emptyDescription = showFavoritesOnly
+    ? 'Star a contact to add it here.'
+    : searchTerm
+    ? 'Try another name or address.'
+    : 'Save a contact to make future transfers easier.';
 
   return (
     <ChatLayout>
@@ -407,6 +452,209 @@ export default function ContactsPage() {
             </form>
           )}
         </Modal>
+      </div>
+    </ChatLayout>
+  );
+}
+                      size="sm"
+                      onClick={() => {
+                        // TODO: Implement QR code generation
+                        toast('QR code generation coming soon!');
+                      }}
+                    >
+                      <QrCode className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+        {!isLoading && pageCount > 1 && (
+          <nav className="mt-6 flex items-center justify-center gap-4" aria-label="Contacts pages">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={currentContactsPage === 1}
+              onClick={() => setContactsPage(currentContactsPage - 1)}
+              aria-label="Previous contacts page"
+            >
+              Previous
+            </Button>
+            <span aria-live="polite" className="text-sm text-gray-300">
+              Page {currentContactsPage} of {pageCount}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={currentContactsPage === pageCount}
+              onClick={() => setContactsPage(currentContactsPage + 1)}
+              aria-label="Next contacts page"
+            >
+              Next
+            </Button>
+          </nav>
+        )}
+      </div>
+
+      {/* Create Contact Modal */}
+      <Modal
+        isOpen={isCreateModalOpen}
+        onClose={() => { setIsCreateModalOpen(false); setAddressError(null); }}
+        title="Add New Contact"
+      >
+        <form onSubmit={handleCreateContact} className="space-y-4">
+          <Input
+            label="Name"
+            placeholder="Enter contact name"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            required
+          />
+          
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'create-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="create-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Token Type
+            </label>
+            <select
+              value={formData.tokenType}
+              onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
+              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+            >
+              <option value="STRK">STRK</option>
+              <option value="ETH">ETH</option>
+              <option value="DAI">DAI</option>
+            </select>
+          </div>
+          
+          <div className="flex justify-end space-x-3 pt-4">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => { setIsDeleteModalOpen(false); setContactToDelete(null); }}
+            >
+              Cancel
+            </Button>
+            <Button type="submit">
+              Add Contact
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit Contact Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setIsAddressChangeConfirmationOpen(false);
+        }}
+        title={isAddressChangeConfirmationOpen ? 'Confirm Address Change' : 'Edit Contact'}
+      >
+        {isAddressChangeConfirmationOpen && editingContact ? (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Changing this destination can redirect future payments to a different account. Confirm the new address before saving.
+            </p>
+            <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+              <div>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Current address</p>
+                <code className="break-all text-sm">{formatAddress(editingContact.address)}</code>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">New address</p>
+                <code className="break-all text-sm">{formatAddress(formData.address.trim())}</code>
+              </div>
+            </div>
+            <div className="flex justify-end space-x-3 pt-2">
+              <Button type="button" variant="secondary" onClick={cancelAddressChange}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => void persistContactUpdate()}>
+                Confirm destination change
+              </Button>
+            </div>
+          </div>
+        ) : (
+        <form onSubmit={handleUpdateContact} className="space-y-4">
+          <Input
+            label="Name"
+            placeholder="Enter contact name"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            required
+          />
+          
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'edit-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="edit-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Token Type
+            </label>
+            <select
+              value={formData.tokenType}
+              onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
+              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+            >
+              <option value="STRK">STRK</option>
+              <option value="ETH">ETH</option>
+              <option value="DAI">DAI</option>
+            </select>
+          </div>
+          
+          <div className="flex justify-end space-x-3 pt-4">
+            <Button
+              type="button"
+              variant="danger"
+              onClick={handleConfirmDelete}
+              data-testid="confirm-delete-btn"
+            >
+              Delete
+            </Button>
+          </div>
+        </form>
+        )}
+      </Modal>
       </div>
     </ChatLayout>
   );

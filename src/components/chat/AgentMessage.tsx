@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { ChatMessage } from "@/types";
 import { Copy, Check, RefreshCw } from "lucide-react";
-import { CodeBlock } from "./CodeBlock";
+import { AgentMarkdown } from "./AgentMarkdown";
 import ExecutionTrace from "./ExecutionTrace";
 
 type DataRecord = Record<string, unknown>;
@@ -368,6 +368,7 @@ export default function AgentMessage({
         >
           {renderContent()}
         </ReactMarkdown>
+        <AgentMarkdown>{renderContent()}</AgentMarkdown>
       </div>
 
       {/* Execution Trace */}

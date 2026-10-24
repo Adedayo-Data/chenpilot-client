@@ -14,6 +14,34 @@ export interface User {
   updatedAt: string;
 }
 
+/** Server event model for sign-in activity (#257). See docs/API_CONTRACT.md "Sign-in Activity". */
+export interface SignInActivityEvent {
+  id: string;
+  type: "sign_in" | "sign_out" | "password_change" | "reauthentication" | "token_refresh";
+  outcome: "success" | "failure";
+  /** ISO 8601 timestamp. */
+  occurredAt: string;
+  /** Coarse device info derived server-side; never a full fingerprint. */
+  device?: { browser?: string; os?: string; type?: "desktop" | "mobile" | "tablet" | "unknown" };
+  /** Raw user agent, used only when `device` is missing. */
+  userAgent?: string;
+  /** Approximate location (country/region), if the server provides it. */
+  approxLocation?: { country?: string; region?: string };
+  /** IP address. Hidden in the UI unless the user asks for details. */
+  ipAddress?: string;
+  method?: "password" | "google";
+  /** Session this event belongs to, for revocation. */
+  sessionId?: string;
+  /** The session making this request. */
+  current?: boolean;
+}
+
+export interface SignInActivityPage {
+  events: SignInActivityEvent[];
+  /** What the backend supports; actions are hidden when false/absent. */
+  capabilities: { revokeSession: boolean; reportEvent: boolean };
+}
+
 export interface StellarAccountInfo {
   address: string;
   publicKey: string;
@@ -152,6 +180,28 @@ export interface WalletBalance {
   nativeBalance: string;
 }
 
+// Stellar Trustline Types
+export interface Trustline {
+  assetCode: string;
+  assetIssuer: string;
+  balance: string;
+  limit: string;
+  buyingLiabilities?: string;
+  sellingLiabilities?: string;
+  assetType?: string;
+}
+
+export interface AddTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+  limit?: string;
+}
+
+export interface RemoveTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+}
+
 // Stellar Transaction Types
 export type TransactionDirection = 'incoming' | 'outgoing' | 'self' | 'unknown';
 
@@ -228,6 +278,17 @@ export interface TransactionHistory {
   loadMoreError: string | null;
   /** Submitted transactions awaiting authoritative confirmation, keyed by hash. */
   pending: PendingTransactionConfirmation[];
+}
+
+/**
+ * Client-side search state for the transaction history page.
+ * Filtering is performed in-memory; no additional API calls are required.
+ */
+export interface TransactionSearchState {
+  /** Raw value from the search input */
+  query: string;
+  /** Transactions that survive the current query and any active filters */
+  filtered: StellarTransaction[];
 }
 
 // Agent Query Types
@@ -313,6 +374,24 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Delivery state of a user message (#266); see src/store/messageDelivery.ts. */
+    delivery?: "queued" | "sending" | "sent" | "failed";
+    /** Server-assigned id once the message was acknowledged (#266). */
+    serverId?: string;
+    /** Failure category of an agent reply (#274, #262), e.g. `timeout` vs `network`. */
+    errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
+    /** Client request id / idempotency key of the query this reply belongs to (#274, #262). */
+    requestId?: string;
+    /** Whether a retry action is offered for this failed reply (#262). */
+    retryable?: boolean;
+    /** Original prompt, preserved so a retry resends exactly what the user typed (#262). */
+    retryPrompt?: string;
+    /** Optimistic id of the original user message, reused on retry so no duplicate bubble appears. */
+    retryTempId?: string;
+    /** The prompt looked like a state-changing action (transfer, swap, ...); retries check status first. */
+    stateChanging?: boolean;
+    /** Outcome of the latest status check after a timeout (#274). */
+    actionStatus?: "pending" | "completed" | "failed" | "unknown";
   };
 }
 
@@ -325,6 +404,25 @@ export interface ThreadState {
   /** Whether the thread panel is typing an agent response */
   isTyping: boolean;
 }
+
+/** One page of server-side chat history (#265, #264). */
+export interface ChatHistoryPage {
+  /** Messages in this page; any order, deduped and sorted client-side. */
+  messages: ChatMessage[];
+  /** Opaque cursor for the next older page; `null` when there is none. */
+  nextCursor: string | null;
+  /** Whether older messages exist beyond this page. */
+  hasMore: boolean;
+}
+
+/** Query for one history page (#264). Omit `before` for the newest page. */
+export interface ChatHistoryQuery {
+  before?: string;
+  limit?: number;
+}
+
+/** Load state for the chat history screen (#265). */
+export type ChatHistoryStatus = "idle" | "loading" | "succeeded" | "failed";
 
 export interface Conversation {
   id: string;
@@ -431,10 +529,19 @@ export interface AuthState {
   error: string | null;
 }
 
+export interface TransactionFilters {
+  type: string;
+  asset: string;
+  direction: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface AccountState {
   status: AccountStatus | null;
   balance: WalletBalance | null;
   transactions: TransactionHistory;
+  filters?: TransactionFilters;
   isLoading: boolean;
   error: string | null;
   network: {
@@ -448,6 +555,9 @@ export interface AccountState {
     isLoading: boolean;
     error: string | null;
   };
+  trustlines: Trustline[];
+  isLoadingTrustlines: boolean;
+  trustlinesError: string | null;
 }
 
 export interface ContactsState {
@@ -473,12 +583,19 @@ export interface UIState {
   };
 }
 
+export interface PresenceState {
+  users: { [userId: string]: { userId: string; userName: string; status: 'online' | 'away' | 'offline'; lastSeen: string; conversationId?: string } };
+  onlineCount: number;
+  awayCount: number;
+}
+
 export interface RootState {
   auth: AuthState;
   account: AccountState;
   contacts: ContactsState;
   chat: ChatState;
   ui: UIState;
+  presence: PresenceState;
 }
 
 // Component Props Types
