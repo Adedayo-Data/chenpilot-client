@@ -58,6 +58,7 @@ function normalizeAddress(addr: string): string {
   onSubmit: (data: SendPaymentRequest, idempotencyKey: string) => Promise<PaymentSubmissionResult>;
   onCheckStatus: (idempotencyKey: string) => Promise<PaymentStatusResult>;
   contacts: Contact[];
+  isOnline: boolean;
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   nativeBalance?: string;
@@ -69,6 +70,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   onSubmit,
   onCheckStatus,
   contacts,
+  isOnline,
   isLoading = false,
   defaultTokenType = 'XLM',
   senderAddress,
@@ -107,7 +109,6 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     setValue,
     watch,
     reset,
-    setFocus,
   } = useForm<SendPaymentRequest>({
     resolver: zodResolver(sendPaymentSchema),
     defaultValues: {
@@ -138,8 +139,6 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
-  const paymentAttemptSignatureRef = useRef<string | null>(null);
-  const paymentAttemptKeyRef = useRef<string | null>(null);
   const nativeBalanceValue = Number(nativeBalance);
   const requiredReserveValue = Number(requiredReserve);
   const spendableBalance = nativeBalance !== undefined && requiredReserve !== undefined
@@ -223,8 +222,6 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   };
 
   const handleClearContact = () => {
-    paymentAttemptSignatureRef.current = null;
-    paymentAttemptKeyRef.current = null;
     setSelectedContact(null);
     setValue('recipientAddress', '');
     setIsSelfTransfer(false);
@@ -736,6 +733,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                 <Send className="h-4 w-4 mr-2" aria-hidden="true" />
                 Send Payment
                 <Send className="h-4 w-4 mr-2" />
+                {isOnline ? 'Send Payment' : 'Unavailable offline'}
                 Review Payment
               </>
             )}

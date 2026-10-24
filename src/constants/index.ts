@@ -63,6 +63,18 @@ export const UI_CONFIG = {
   ANIMATION_DURATION: 200,
 } as const;
 
+export const VOICE_MESSAGE = {
+  PREFERRED_MIME_TYPES: [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+  ],
+  MAX_SIZE_BYTES: 2 * 1024 * 1024,
+  MAX_DURATION_SECONDS: 60,
+  STORAGE_WARN_BYTES: 1024 * 1024,
+} as const;
+
 // Theme Colors
 export const THEME_COLORS = {
   PRIMARY: {

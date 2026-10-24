@@ -2,8 +2,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ContactsPage from './page';
-import toast from 'react-hot-toast';
-import { createContact, updateContact, deleteContact, getContacts } from '@/store/slices/contactsSlice';
+import type { Contact } from '@/types';
 
 const mockPush = vi.fn();
 
@@ -26,11 +25,21 @@ vi.mock('@/components/layout/ChatLayout', () => ({
 }));
 
 const mockDispatch = vi.fn();
-let mockState: any;
+type ContactsPageMockState = {
+  auth: { isAuthenticated: boolean };
+  chat: { isOnline: boolean };
+  contacts: {
+    list: Contact[];
+    isLoading: boolean;
+    error: string | null;
+    selectedContact: Contact | null;
+  };
+};
+let mockState: ContactsPageMockState;
 
 vi.mock('@/store', () => ({
   useAppDispatch: () => mockDispatch,
-  useAppSelector: (selector: (state: any) => any) => selector(mockState),
+  useAppSelector: (selector: (state: ContactsPageMockState) => unknown) => selector(mockState),
 }));
 
 describe('#343 — ContactsPage Component Tests', () => {
@@ -57,6 +66,7 @@ describe('#343 — ContactsPage Component Tests', () => {
     vi.clearAllMocks();
     mockState = {
       auth: { isAuthenticated: true },
+      chat: { isOnline: true },
       contacts: {
         list: sampleContacts,
         isLoading: false,
@@ -76,6 +86,7 @@ describe('#343 — ContactsPage Component Tests', () => {
   it('redirects to /auth/login when user is unauthenticated', () => {
     mockState = {
       auth: { isAuthenticated: false },
+      chat: { isOnline: true },
       contacts: { list: [], isLoading: false, error: null, selectedContact: null },
     };
 
@@ -88,6 +99,7 @@ describe('#343 — ContactsPage Component Tests', () => {
   it('renders loading indicator when contacts are loading', () => {
     mockState = {
       auth: { isAuthenticated: true },
+      chat: { isOnline: true },
       contacts: { list: [], isLoading: true, error: null, selectedContact: null },
     };
 
@@ -98,6 +110,7 @@ describe('#343 — ContactsPage Component Tests', () => {
   it('renders empty state when there are no contacts and allows opening create modal', () => {
     mockState = {
       auth: { isAuthenticated: true },
+      chat: { isOnline: true },
       contacts: { list: [], isLoading: false, error: null, selectedContact: null },
     };
 
@@ -115,6 +128,7 @@ describe('#343 — ContactsPage Component Tests', () => {
     beforeEach(() => {
       mockState = {
         auth: { isAuthenticated: true },
+        chat: { isOnline: true },
         contacts: { list: [], isLoading: false, error: null, selectedContact: null },
       };
     });

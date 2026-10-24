@@ -428,6 +428,17 @@ class AgentService {
    * or null when nothing answered.
    */
   async healthCheck(): Promise<AgentHealthCheck> {
+    try {
+      // Since the experimental backend doesn't have a /health endpoint,
+      // we'll try to make a simple request to test connectivity
+      // We'll use a HEAD request to avoid authentication issues
+      await this.api.request({
+        method: 'HEAD',
+        url: '/',
+        timeout: 5000
+      });
+      
+      this.isConnected = true;
     const timestamp = () => new Date().toISOString();
     const finish = (result: AgentHealthCheck): AgentHealthCheck => {
       this.isConnected = result.status !== 'unhealthy';
@@ -938,7 +949,7 @@ class AgentService {
       await this.healthCheck();
       logger.debug('[AgentService] Successfully initialized');
     } catch (error) {
-      console.warn('[AgentService] Failed to initialize, will retry on first use');
+      console.warn('[AgentService] Failed to initialize, will retry on first use', error);
     }
   }
 

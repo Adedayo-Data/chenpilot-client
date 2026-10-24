@@ -331,6 +331,9 @@ describe('getPaymentFailureMessage', () => {
   it('explains reserve-related rejection in plain language', () => {
     expect(getPaymentFailureMessage(new Error('Insufficient balance to maintain reserve')))
       .toContain("Stellar's minimum account reserve");
+  });
+});
+
 describe("payment precision validation", () => {
   const validAddress = "G" + "A".repeat(55);
 

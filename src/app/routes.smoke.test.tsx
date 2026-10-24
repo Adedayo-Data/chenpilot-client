@@ -1,11 +1,12 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import type { RootState } from '@/store';
 
 // Common mocks for route smoke tests
 const mockPush = vi.fn();
 const mockDispatch = vi.fn();
-let mockState: any = {};
+let mockState: Partial<RootState> = {};
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -21,13 +22,13 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('next/link', () => ({
-  default: ({ children, href, ...props }: any) => (
+  default: ({ children, href, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
     <a href={href} {...props}>{children}</a>
   ),
 }));
 
 vi.mock('next/image', () => ({
-  default: ({ alt, src, ...props }: any) => (
+  default: ({ alt, src, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { src: string }) => (
     // eslint-disable-next-line @next/next/no-img-element
     <img alt={alt || ''} src={src} {...props} />
   ),
@@ -44,12 +45,12 @@ vi.mock('react-hot-toast', () => ({
 
 vi.mock('@/store', () => ({
   useAppDispatch: () => mockDispatch,
-  useAppSelector: (selector: (state: any) => any) => selector(mockState),
+  useAppSelector: (selector: (state: RootState) => unknown) => selector(mockState as RootState),
 }));
 
 vi.mock('react-redux', () => ({
   useDispatch: () => mockDispatch,
-  useSelector: (selector: (state: any) => any) => selector(mockState),
+  useSelector: (selector: (state: RootState) => unknown) => selector(mockState as RootState),
 }));
 
 vi.mock('@/components/layout/ChatLayout', () => ({
