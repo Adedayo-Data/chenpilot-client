@@ -4,18 +4,28 @@ import React, { useState, useEffect, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import {
   sendMessage,
+  regenerateLastResponse,
+  ABORT_ERROR,
   clearMessages,
   updateMessage,
   saveConversationLocally,
   queueMessage,
   addMessage as reduxAddMessage,
+  setMessageDelivery,
   addPendingMessage,
+  removeMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentRetryAction } from "@/components/chat/AgentRetryAction";
+import { AgentMarkdown } from "@/components/chat/AgentMarkdown";
+import { AgentTimeoutNotice } from "@/components/chat/AgentTimeoutNotice";
+import agentConfig from "@/config/agent";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
+import { ChatComposerField } from "@/components/chat/ChatComposerField";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
+import { useChatResync } from "@/hooks/useChatResync";
 import {
   Send,
   Mic,
@@ -29,6 +39,7 @@ import { ChatMessage } from "@/types";
 import { usePathname, useRouter } from "next/navigation";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { AgentToolsMenu } from "@/components/chat/AgentToolsMenu";
+import { QueryStopButton } from "@/components/chat/QueryStopButton";
 
 // ─── Speech Recognition ambient types (used by the old transcription path) ────
 
@@ -82,6 +93,9 @@ function formatSeconds(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// After this long, the typing indicator explains the request is still running (#274)
+const LONG_RUNNING_NOTICE_SECONDS = 10;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const ChatEngine: React.FC = () => {
@@ -97,9 +111,14 @@ export const ChatEngine: React.FC = () => {
     currentConversation,
     isOnline,
     pendingMessages,
+    streamingResponse,
   } = useAppSelector((state) => state.chat);
   const { processQueue } = useOfflineQueue();
+  // Merge live chat events and catch up on ones missed during socket downtime (#277)
+  useChatResync();
   const [inputValue, setInputValue] = useState("");
+  // Seconds the current agent request has been running; drives the "still working" state (#274)
+  const [pendingSeconds, setPendingSeconds] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
@@ -107,6 +126,8 @@ export const ChatEngine: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const inflightRef = useRef<{ abort: () => void; unwrap: () => Promise<unknown> } | null>(null);
+  const lastDraftRef = useRef("");
 
   // ── Legacy speech-to-text (transcription → text input) ───────────────────
   // Kept for the Mic button when MediaRecorder is NOT supported
@@ -151,6 +172,27 @@ export const ChatEngine: React.FC = () => {
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
+  // Cancel a streaming/in-flight agent request when the route changes (#261). Uses the same
+  // in-flight ref as the Stop button, so there is one source of truth for the active request.
+  useEffect(() => {
+    return () => {
+      inflightRef.current?.abort();
+      inflightRef.current = null;
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!isTyping) {
+      setPendingSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setPendingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isTyping]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
   }, [messages, isTyping, voiceStatus, prefersReducedMotion]);
@@ -172,6 +214,7 @@ export const ChatEngine: React.FC = () => {
     return () => {
       if (legacyTimerRef.current) clearInterval(legacyTimerRef.current);
       try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+      inflightRef.current?.abort();
     };
   }, []);
 
@@ -283,6 +326,7 @@ export const ChatEngine: React.FC = () => {
     e?.preventDefault();
     if (!inputValue.trim() || isChatLoading || isTyping) return;
     const message = inputValue.trim();
+    lastDraftRef.current = message;
     setInputValue("");
 
     try {
@@ -295,15 +339,16 @@ export const ChatEngine: React.FC = () => {
         const msgId = `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         dispatch(queueMessage({ id: msgId, query: queryWithTool }));
 
-        // Add optimistic user message
+        // Add the user message as queued; the offline queue sends it with this id as tempId,
+        // so the same row moves queued → sending → sent (#266)
         const userMessage: ChatMessage = {
           id: msgId,
           type: "user",
           content: message,
           timestamp: new Date().toISOString(),
+          metadata: { delivery: "queued", status: "pending", optimisticId: msgId, tempId: msgId },
         };
         dispatch(reduxAddMessage(userMessage));
-        dispatch(addPendingMessage(msgId));
 
         toast.info(
           "You're offline. Message queued and will send when back online.",
@@ -311,9 +356,85 @@ export const ChatEngine: React.FC = () => {
         return;
       }
 
-      await dispatch(sendMessage(queryWithTool)).unwrap();
+      const request = dispatch(sendMessage(queryWithTool));
+      inflightRef.current = request;
+      await request.unwrap();
+      inflightRef.current = null;
     } catch (error: any) {
+      inflightRef.current = null;
+      if (error === ABORT_ERROR || error?.name === "AbortError") {
+        setInputValue(lastDraftRef.current);
+        return;
+      }
       toast.error(error || "Failed to send message");
+    }
+  };
+
+  // Retry is only offered for messages that never reached the service (#266)
+  const handleRetryMessage = (failed: ChatMessage) => {
+    const query = typeof failed.content === "string" ? failed.content : JSON.stringify(failed.content);
+    if (!isOnline) {
+      dispatch(queueMessage({ id: failed.id, query }));
+      dispatch(setMessageDelivery({ id: failed.id, delivery: "queued" }));
+      toast.info("You're offline. Message queued and will send when back online.");
+      return;
+    }
+    dispatch(sendMessage({ query, tempId: failed.id }))
+      .unwrap()
+      .catch(() => toast.error("Message still couldn't be sent"));
+  };
+
+  // Resend a failed prompt exactly as typed, reusing its user bubble and request id (#262)
+  const handleRetryFailed = (failed: ChatMessage) => {
+    const meta = failed.metadata;
+    if (!meta?.retryPrompt || isChatLoading || isTyping) return;
+    dispatch(removeMessage(failed.id));
+    dispatch(
+      sendMessage({
+        query: meta.retryPrompt,
+        tempId: meta.retryTempId,
+        clientRequestId: meta.requestId,
+      }),
+    )
+      .unwrap()
+      .catch((error: unknown) => toast.error(String(error || "Failed to send message")));
+  };
+
+  const handleResolveTimeout = (messageId: string, updates: Partial<ChatMessage>) => {
+    dispatch(updateMessage({ id: messageId, updates }));
+    if (updates.metadata?.actionStatus === "completed") {
+      toast.success("The action completed");
+    }
+  };
+
+  // Resend the user query that preceded a timed-out agent reply (read-only queries only)
+  const handleRetryTimedOut = (messageId: string) => {
+    const idx = messages.findIndex((m) => m.id === messageId);
+    const original = messages
+      .slice(0, idx)
+      .reverse()
+      .find((m) => m.type === "user");
+    if (original && !isChatLoading && !isTyping) {
+      dispatch(sendMessage(original.content));
+    }
+  };
+
+  const handleStopQuery = () => {
+    inflightRef.current?.abort();
+    setInputValue(lastDraftRef.current);
+  };
+
+  const handleRegenerate = async () => {
+    if (isChatLoading || isTyping || currentConversation?.isActive === false) return;
+    try {
+      const request = dispatch(regenerateLastResponse());
+      inflightRef.current = request;
+      await request.unwrap();
+      inflightRef.current = null;
+    } catch (error: any) {
+      inflightRef.current = null;
+      if (error === ABORT_ERROR || error === "busy" || error === "inactive") return;
+      toast.error(error || "Failed to regenerate");
     }
   };
 
@@ -424,19 +545,13 @@ export const ChatEngine: React.FC = () => {
       className={`w-full ${isSticky ? "max-w-4xl mx-auto px-4 py-6" : "max-w-3xl mb-8"}`}
     >
       <div className="relative bg-[#1A1A2E] rounded-2xl p-6 border border-gray-800/50 shadow-xl">
-        <input
-          ref={inputRef}
+        <ChatComposerField
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSendMessage();
-            }
-          }}
+          onChange={setInputValue}
+          onSend={() => handleSendMessage()}
+          onEscape={handleComposerEscape}
           placeholder={isRecording ? "Listening..." : "Ask ChenPilot..."}
           disabled={isRecording}
-          className="w-full bg-transparent border-none text-white placeholder:text-gray-500 focus:outline-none text-lg mb-4"
         />
 
         {isRecording && (
@@ -468,6 +583,7 @@ export const ChatEngine: React.FC = () => {
             <TagWidget />
           </div>
 
+          <QueryStopButton inFlight={isChatLoading || isTyping} onStop={handleStopQuery} />
           <button
             type="button"
             onClick={() =>
@@ -607,18 +723,52 @@ return (
               {message.type === "user" ? (
                 <UserMessage
                   message={message}
+                  onRetry={handleRetryMessage}
                   onCopy={copyToClipboard}
                   onEdit={handleEditMessage}
                 />
               ) : (
                 <div className="max-w-2xl w-full">
-                  <AgentMessage message={message} onCopy={copyToClipboard} />
+                  <AgentMessage
+                    message={message}
+                    onCopy={copyToClipboard}
+                    onRegenerate={handleRegenerate}
+                    canRegenerate={
+                      message.type === "agent" &&
+                      message.id === [...messages].reverse().find((item) => item.type === "agent")?.id &&
+                      !isChatLoading &&
+                      !isTyping &&
+                      currentConversation?.isActive !== false
+                    }
+                  />
+                  {/* Timeouts are handled by AgentTimeoutNotice (status check first); other
+                      retryable failures get the #262 retry action */}
+                  {message.metadata?.errorKind !== "timeout" && (
+                    <AgentRetryAction
+                      message={message}
+                      onRetry={handleRetryFailed}
+                      onResolve={(updates) => dispatch(updateMessage({ id: message.id, updates }))}
+                    />
+                  )}
+                  <AgentTimeoutNotice
+                    message={message}
+                    onResolve={(updates) => handleResolveTimeout(message.id, updates)}
+                    onRetry={() => handleRetryTimedOut(message.id)}
+                  />
                 </div>
               )}
             </div>
           ))}
 
-          {isTyping && (
+          {isTyping && streamingResponse?.text ? (
+            <div className="flex justify-start" data-testid="streaming-response">
+              <div className="max-w-2xl w-full" aria-live="polite" aria-busy="true">
+                <div className="text-white text-left prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+                  <AgentMarkdown>{streamingResponse.text}</AgentMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : isTyping && (
             <div className="flex justify-start">
               <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
                 <div className="flex items-center space-x-3">
@@ -633,8 +783,10 @@ return (
                       style={{ animationDelay: "0.2s" }}
                     />
                   </div>
-                  <span className="text-sm text-gray-400">
-                    ChenPilot is thinking...
+                  <span className="text-sm text-gray-400" role="status" aria-live="polite">
+                    {pendingSeconds >= LONG_RUNNING_NOTICE_SECONDS
+                      ? `Still working on it (${pendingSeconds}s). Long actions can take up to ${Math.round(agentConfig.timeout / 1000)}s.`
+                      : "ChenPilot is thinking..."}
                   </span>
                 </div>
               </div>
