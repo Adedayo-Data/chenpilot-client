@@ -136,6 +136,164 @@ describe("createContactSchema", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// sendPaymentSchema
+// ─────────────────────────────────────────────────────────────────────────────
+import { sendPaymentSchema, createContactSchema } from '../validation';
+import { SUPPORTED_ASSETS } from '@/types';
+
+const VALID_ADDRESS = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV';
+
+// Helper: build a 56-char valid G-address
+const G56 = 'G' + 'A'.repeat(55);
+
+describe('sendPaymentSchema', () => {
+  const base = {
+    recipientAddress: G56,
+    amount: '10',
+    tokenType: 'XLM',
+    memoType: 'none',
+  };
+
+  it('accepts a minimal valid payload', () => {
+    expect(sendPaymentSchema.safeParse(base).success).toBe(true);
+  });
+
+  it('rejects an empty recipient address', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, recipientAddress: '' });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects amount of 0', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, amount: '0' });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a negative amount', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, amount: '-1' });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects amount above max', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, amount: '9999999' });
+    expect(r.success).toBe(false);
+  });
+
+  it.each(SUPPORTED_ASSETS)('accepts tokenType %s', (token) => {
+    const r = sendPaymentSchema.safeParse({ ...base, tokenType: token });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects an unsupported tokenType (STRK)', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, tokenType: 'STRK' });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error?.issues)).toContain('Unsupported token type');
+  });
+
+  it('rejects an unsupported tokenType (DAI)', () => {
+    const r = sendPaymentSchema.safeParse({ ...base, tokenType: 'DAI' });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects memo without memoType when memo is provided', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: 'hello',
+      memoType: undefined,
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts memo with memoType=text', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: 'hello',
+      memoType: 'text',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects id memo with non-numeric content', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: 'abc',
+      memoType: 'id',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts id memo with numeric content', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: '12345',
+      memoType: 'id',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects hash memo shorter than 64 hex chars', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: 'abc',
+      memoType: 'hash',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('accepts a 64-char hex hash memo', () => {
+    const r = sendPaymentSchema.safeParse({
+      ...base,
+      memo: 'a'.repeat(64),
+      memoType: 'hash',
+    });
+    expect(r.success).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// createContactSchema — unified asset list
+// ─────────────────────────────────────────────────────────────────────────────
+describe('createContactSchema — unified asset list', () => {
+  const base = { name: 'Alice', address: G56 };
+
+  it.each(SUPPORTED_ASSETS)('accepts supported tokenType %s', (token) => {
+    expect(createContactSchema.safeParse({ ...base, tokenType: token }).success).toBe(true);
+  });
+
+  it('rejects legacy tokenType STRK with actionable message', () => {
+    const r = createContactSchema.safeParse({ ...base, tokenType: 'STRK' });
+    expect(r.success).toBe(false);
+    // Error message must list the supported tokens so the user knows what to use
+    const messages = r.error?.issues.map((i) => i.message).join(' ');
+    expect(messages).toContain('Unsupported token type');
+  });
+
+  it('rejects legacy tokenType DAI', () => {
+    const r = createContactSchema.safeParse({ ...base, tokenType: 'DAI' });
+    expect(r.success).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPPORTED_ASSETS integrity
+// ─────────────────────────────────────────────────────────────────────────────
+describe('SUPPORTED_ASSETS', () => {
+  it('includes at least one entry', () => {
+    expect(SUPPORTED_ASSETS.length).toBeGreaterThan(0);
+  });
+
+  it('contains the expected tokens', () => {
+    expect(SUPPORTED_ASSETS).toContain('XLM');
+    expect(SUPPORTED_ASSETS).toContain('USDC');
+    expect(SUPPORTED_ASSETS).toContain('USDT');
+    expect(SUPPORTED_ASSETS).toContain('BTC');
+    expect(SUPPORTED_ASSETS).toContain('ETH');
+    expect(SUPPORTED_ASSETS).toContain('AQUA');
+  });
+
+  it('does not contain unsupported legacy tokens', () => {
+    expect(SUPPORTED_ASSETS).not.toContain('STRK');
+    expect(SUPPORTED_ASSETS).not.toContain('DAI');
 describe('sendPaymentSchema memo rules', () => {
   const payment = {
     recipientAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB',

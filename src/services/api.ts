@@ -25,6 +25,10 @@ import {
   AuditLogsQueryParams,
   AuditLogsResponse,
   AuditLogStats,
+  SendPaymentRequest,
+} from '@/types';
+import agentService from './agentService';
+import { tokenRefreshService } from './tokenRefreshService';
   MfaStatusData,
   MfaEnrollmentData,
   MfaVerifyRequest,
@@ -1117,6 +1121,53 @@ class ApiService {
     }
   }
 
+  // Payment endpoints
+
+  /**
+   * Submit a payment to the backend. The backend is expected to create and
+   * broadcast the Stellar transaction and return the confirmed result.
+   *
+   * The client must NOT treat a successful response here as the only
+   * authorisation gate — the backend enforces its own authorisation and
+   * balance checks independently.
+   *
+   * @param data - Validated and sanitized `SendPaymentRequest` payload.
+   * @returns Promise resolving to `ApiResponse` containing the transaction hash
+   *          and the ledger-confirmed status of the payment.
+   * @throws {AxiosError} Throws for network or server errors.
+   *
+   * @see docs/API_CONTRACT.md — "Payment Endpoint" section.
+   */
+  async sendPayment(
+    data: SendPaymentRequest,
+  ): Promise<ApiResponse<{ transactionHash: string; status: 'success' | 'failed' }>> {
+    const response = await this.api.post<
+      ApiResponse<{ transactionHash: string; status: 'success' | 'failed' }>
+    >('/payments/send', data);
+    return response.data;
+  }
+
+  // Agent query - Optimized for backend integration  /**
+   * Send a query to the AI agent. Attempts connected experimental agent service first, falling back to backend `/query`.
+   * Does NOT throw on backend/execution error; catches exceptions and returns a resolved `AgentQueryResponse` object with `success: false` and friendly message.
+   *
+   * @param data - Request payload containing user query string.
+   * @returns Promise resolving to `AgentQueryResponse` containing result envelope.
+   *
+   * @example
+   * ```ts
+   * import { apiService } from '@/services/api';
+   * 
+   * const response = await apiService.queryAgent({ query: 'Swap 10 XLM for USDC' });
+   * if (response.result.success) {
+   *   console.log('Agent output:', response.result.data);
+   * } else {
+   *   console.error('Agent query error:', response.result.error);
+   * }
+   * ```
+   */
+  async queryAgent(data: AgentQueryRequest): Promise<AgentQueryResponse> {
+    // First try the experimental agent service
   // Agent query
 
   async queryAgent(
