@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useId,useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import {
@@ -29,6 +29,10 @@ import {
   Trash2,
   Copy,
   QrCode,
+  ArrowLeft,
+} from 'lucide-react';
+import { formatAddress } from '@/utils/format';
+import { Contact, CreateContactRequest, SUPPORTED_ASSETS, TokenType } from '@/types';
   Download,
   Loader2,
   AlertCircle,
@@ -127,6 +131,11 @@ export default function ContactsPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isAddressChangeConfirmationOpen, setIsAddressChangeConfirmationOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [formData, setFormData] = useState<CreateContactRequest>({
+    name: '',
+    address: '',
+    tokenType: 'XLM',
+  });
   const [formData, setFormData] = useState<CreateContactRequest>(createEmptyContactForm());
   const [addressError, setAddressError] = useState<string | null>(null);
 
@@ -139,6 +148,10 @@ export default function ContactsPage() {
   /** Timer refs keyed by contact id so multiple undo windows can coexist. */
   const undoTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  // IDs for accessible live-region and search label
+  const searchId = useId();
+  const resultCountId = useId();
+
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/auth/login');
@@ -148,6 +161,9 @@ export default function ContactsPage() {
   }, [dispatch, isAuthenticated, router]);
 
   const filteredContacts = contacts.filter(
+    (contact) =>
+      contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      contact.address.toLowerCase().includes(searchTerm.toLowerCase()),
     (c) =>
       c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       c.address.toLowerCase().includes(searchTerm.toLowerCase()),
@@ -175,6 +191,13 @@ export default function ContactsPage() {
       await dispatch(createContact({ ...formData, note: formData.note?.trim() || undefined })).unwrap();
       toast.success('Contact created successfully!');
       setIsCreateModalOpen(false);
+      setFormData({ name: '', address: '', tokenType: 'XLM' });
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : String(error || 'Failed to create contact');
+      toast.error(errorMessage);
       setFormData(blankForm());
     } catch (error: unknown) {
       // mutationError.create is already set in the slice; toast for visibility
@@ -209,6 +232,10 @@ export default function ContactsPage() {
   // ── Update ────────────────────────────────────────────────────────────────
   const persistContactUpdate = async () => {
     if (!editingContact) return;
+    try {
+      await dispatch(
+        updateContact({ id: editingContact.id, data: formData }),
+      ).unwrap();
     const addrErr = validateContactAddress(formData.address);
     if (addrErr) { setAddressError(addrErr); return; }
     setAddressError(null);
@@ -221,6 +248,7 @@ export default function ContactsPage() {
       setIsEditModalOpen(false);
       setIsAddressChangeConfirmationOpen(false);
       setEditingContact(null);
+      setFormData({ name: '', address: '', tokenType: 'XLM' });
       setFormData(blankForm());
     } catch (error: unknown) {
       const msg =
@@ -230,9 +258,13 @@ export default function ContactsPage() {
       toast.error(msg);
       setFormData(createEmptyContactForm());
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to update contact');
-      toast.error(msg);
-    }
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : String(error || 'Failed to update contact');
+      toast.error(errorMessage);
+      setFormData(createEmptyContactForm());
+    } 
   };
 
   const handleUpdateContact = async (e: React.FormEvent) => {
@@ -266,6 +298,17 @@ export default function ContactsPage() {
           : 'Failed to delete contact';
   // ── Delete ────────────────────────────────────────────────────────────────
   const handleDeleteContact = async (contact: Contact) => {
+    if (window.confirm(`Are you sure you want to delete ${contact.name}?`)) {
+      try {
+        await dispatch(deleteContact(contact.id)).unwrap();
+        toast.success('Contact deleted successfully!');
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : String(error || 'Failed to delete contact');
+        toast.error(errorMessage);
+      }
     if (!window.confirm(`Are you sure you want to delete ${contact.name}?`)) return;
     try {
       await dispatch(deleteContact(contact.id)).unwrap();
@@ -313,6 +356,12 @@ export default function ContactsPage() {
     toast.error(result.fallbackMessage || buildClipboardFallbackMessage(label));
   };
 
+  /** Readable summary of the current search results for the live region. */
+  const resultCountMessage = searchTerm
+    ? filteredContacts.length === 0
+      ? 'No contacts found.'
+      : `${filteredContacts.length} contact${filteredContacts.length !== 1 ? 's' : ''} found.`
+    : '';
   // ─── Loading gate ─────────────────────────────────────────────────────────────
 
   if (!isAuthenticated) {
@@ -349,10 +398,57 @@ export default function ContactsPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10 w-full">
           {/* Header */}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
+          {/* Search and Stats */}
           <div className="mb-8">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-bold text-white">Your Contacts</h2>
+                <p className="text-gray-300" aria-live="polite" aria-atomic="true">
+                  {contacts.length} contact{contacts.length !== 1 ? 's' : ''} total
+                </p>
+              </div>
+
+              {/* Accessible search field */}
+              <div className="relative">
+                <label htmlFor={searchId} className="sr-only">
+                  Search contacts by name or address
+                </label>
+                <Search
+                  className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400"
+                  aria-hidden="true"
+                />
+                <Input
+                  id={searchId}
+                  placeholder="Search contacts…"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 w-full sm:w-64"
+                  aria-describedby={resultCountId}
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+
+            {/*
+              Polite live region — announces result count to screen readers
+              when the search term changes, without interrupting existing
+              announcements.
+            */}
+            <p
+              id={resultCountId}
+              className="sr-only"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {resultCountMessage}
+            </p>
+          </div>
+
+          {/* Contacts Grid */}
+          {isLoading ? (
+            <div className="text-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
+              <p className="mt-4 text-gray-300">Loading contacts…</p>
                 <p className="text-gray-300">
                   {contacts.length} contact{contacts.length !== 1 ? 's' : ''} total
                 </p>
@@ -682,6 +778,40 @@ export default function ContactsPage() {
             <EmptyState
               icon={<Users aria-hidden="true" className="h-8 w-8" />}
               title={searchTerm ? 'No contacts found' : 'No contacts yet'}
+              description={
+                searchTerm
+                  ? 'Try another name or address.'
+                  : 'Save a contact to make future transfers easier.'
+              }
+              action={
+                !searchTerm
+                  ? {
+                      label: 'Add your first contact',
+                      onClick: () => setIsCreateModalOpen(true),
+                      icon: <Plus aria-hidden="true" className="h-4 w-4" />,
+                    }
+                  : undefined
+              }
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredContacts.map((contact) => (
+                <Card key={contact.id}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">
+                        {contact.name}
+                      </h3>
+                      <p className="text-sm text-gray-300">{contact.tokenType}</p>
+                    </div>
+                    <div className="flex items-center space-x-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEditModal(contact)}
+                        aria-label={`Edit ${contact.name}`}
+                      >
+                        <Edit className="h-4 w-4" aria-hidden="true" />
               description={searchTerm ? 'Try another name or address.' : 'Save a contact to make future transfers easier.'}
               action={!searchTerm ? {
                 label: 'Add your first contact',
@@ -707,15 +837,18 @@ export default function ContactsPage() {
                         size="sm"
                         onClick={() => handleDeleteContact(contact)}
                         className="text-red-600 hover:text-red-700"
+                        aria-label={`Delete ${contact.name}`}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </div>
                   </div>
 
                   <div className="space-y-3">
                     <div>
-                      <p className="text-sm font-medium text-gray-300 mb-1">Address</p>
+                      <p className="text-sm font-medium text-gray-300 mb-1">
+                        Address
+                      </p>
                       <div className="flex items-center space-x-2">
                         <code className="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded flex-1">
                           {formatAddress(contact.address)}
@@ -723,28 +856,30 @@ export default function ContactsPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => void copyToClipboard(contact.address, 'Address')}
+                          onClick={() =>
+                            copyToClipboard(contact.address, 'Address')
+                          }
+                          aria-label={`Copy address for ${contact.name}`}
                         >
-                          <Copy className="h-4 w-4" />
+                          <Copy className="h-4 w-4" aria-hidden="true" />
                         </Button>
                       </div>
                     </div>
 
-                    {contact.note && (
-                      <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-2">
-                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">
-                          Note
-                        </p>
-                        <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{contact.note}</p>
-                      </div>
-                    )}
-
                     <div className="flex items-center justify-between pt-3 border-t border-gray-200 dark:border-gray-700">
                       <span className="text-xs text-gray-500 dark:text-gray-400">
-                        Added {new Date(contact.createdAt).toLocaleDateString()}
+                        Added{' '}
+                        {new Date(contact.createdAt).toLocaleDateString()}
                       </span>
-                      <Button variant="ghost" size="sm" className="text-gray-300 hover:text-white">
-                        <QrCode className="h-4 w-4" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          toast('QR code generation coming soon!');
+                        }}
+                        aria-label={`Show QR code for ${contact.name}`}
+                      >
+                        <QrCode className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </div>
                   </div>
@@ -752,37 +887,14 @@ export default function ContactsPage() {
               ))}
             </div>
           )}
-
-          {!isLoading && pageCount > 1 && (
-            <nav className="mt-6 flex items-center justify-center gap-4" aria-label="Contacts pages">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={currentContactsPage === 1}
-                onClick={() => setContactsPage(currentContactsPage - 1)}
-                aria-label="Previous contacts page"
-              >
-                Previous
-              </Button>
-              <span aria-live="polite" className="text-sm text-gray-300">
-                Page {currentContactsPage} of {pageCount}
-              </span>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={currentContactsPage === pageCount}
-                onClick={() => setContactsPage(currentContactsPage + 1)}
-                aria-label="Next contacts page"
-              >
-                Next
-              </Button>
-            </nav>
-          )}
         </div>
 
-        <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="Add New Contact">
+        {/* Create Contact Modal */}
+        <Modal
+          isOpen={isCreateModalOpen}
+          onClose={() => setIsCreateModalOpen(false)}
+          title="Add New Contact"
+        >
           <form onSubmit={handleCreateContact} className="space-y-4">
             <Input
               label="Name"
@@ -896,38 +1008,40 @@ export default function ContactsPage() {
               label="Address"
               placeholder="Enter Stellar address"
               value={formData.address}
-              onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+              onChange={(e) =>
+                setFormData({ ...formData, address: e.target.value })
+              }
               required
             />
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Token Type</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Token Type
+              </label>
               <select
                 value={formData.tokenType}
-                onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    tokenType: e.target.value as TokenType,
+                  })
+                }
                 className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
               >
-                <option value="STRK">STRK</option>
-                <option value="XLM">XLM</option>
-                <option value="ETH">ETH</option>
-                <option value="DAI">DAI</option>
+                {SUPPORTED_ASSETS.map((token) => (
+                  <option key={token} value={token}>
+                    {token}
+                  </option>
+                ))}
               </select>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Note</label>
-              <textarea
-                value={formData.note ?? ''}
-                onChange={(e) => setFormData({ ...formData, note: e.target.value })}
-                rows={3}
-                maxLength={280}
-                className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-                placeholder="Optional private note for this contact"
-              />
-            </div>
-
             <div className="flex justify-end space-x-3 pt-4">
-              <Button type="button" variant="secondary" onClick={() => setIsCreateModalOpen(false)}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setIsCreateModalOpen(false)}
+              >
                 Cancel
               </Button>
               <Button type="submit">Add Contact</Button>
@@ -935,292 +1049,65 @@ export default function ContactsPage() {
           </form>
         </Modal>
 
+        {/* Edit Contact Modal */}
         <Modal
           isOpen={isEditModalOpen}
-          onClose={() => {
-            setIsEditModalOpen(false);
-            setIsAddressChangeConfirmationOpen(false);
-          }}
-          title={isAddressChangeConfirmationOpen ? 'Confirm Address Change' : 'Edit Contact'}
+          onClose={() => setIsEditModalOpen(false)}
+          title="Edit Contact"
         >
-          {isAddressChangeConfirmationOpen && editingContact ? (
-            <div className="space-y-4">
-              <p className="text-sm text-gray-700 dark:text-gray-300">
-                Changing this destination can redirect future payments to a different account. Confirm the new address before saving.
-              </p>
-              <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-                <div>
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Current address</p>
-                  <code className="break-all text-sm">{formatAddress(editingContact.address)}</code>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400">New address</p>
-                  <code className="break-all text-sm">{formatAddress(formData.address.trim())}</code>
-                </div>
-              </div>
-              <div className="flex justify-end space-x-3 pt-2">
-                <Button type="button" variant="secondary" onClick={cancelAddressChange}>Cancel</Button>
-                <Button type="button" onClick={() => void persistContactUpdate()}>
-                  Confirm destination change
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <form onSubmit={handleUpdateContact} className="space-y-4">
-              <Input
-                label="Name"
-                placeholder="Enter contact name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-              />
+          <form onSubmit={handleUpdateContact} className="space-y-4">
+            <Input
+              label="Name"
+              placeholder="Enter contact name"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              required
+            />
 
-              <Input
-                label="Address"
-                placeholder="Enter Stellar address"
-                value={formData.address}
-                onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                required
-              />
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Token Type</label>
-                <select
-                  value={formData.tokenType}
-                  onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
-                  className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
-                >
-                  <option value="STRK">STRK</option>
-                  <option value="XLM">XLM</option>
-                  <option value="ETH">ETH</option>
-                  <option value="DAI">DAI</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Note</label>
-                <textarea
-                  value={formData.note ?? ''}
-                  onChange={(e) => setFormData({ ...formData, note: e.target.value })}
-                  rows={3}
-                  maxLength={280}
-                  className="block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
-                  placeholder="Optional private note for this contact"
-                />
-              </div>
-
-              <div className="flex justify-end space-x-3 pt-4">
-                <Button type="button" variant="secondary" onClick={() => setIsEditModalOpen(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit">Update Contact</Button>
-              </div>
-            </form>
-          )}
-        </Modal>
-      </div>
-    </ChatLayout>
-  );
-}
-                      size="sm"
-                      onClick={() => {
-                        // TODO: Implement QR code generation
-                        toast('QR code generation coming soon!');
-                      }}
-                    >
-                      <QrCode className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
-        {!isLoading && pageCount > 1 && (
-          <nav className="mt-6 flex items-center justify-center gap-4" aria-label="Contacts pages">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={currentContactsPage === 1}
-              onClick={() => setContactsPage(currentContactsPage - 1)}
-              aria-label="Previous contacts page"
-            >
-              Previous
-            </Button>
-            <span aria-live="polite" className="text-sm text-gray-300">
-              Page {currentContactsPage} of {pageCount}
-            </span>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={currentContactsPage === pageCount}
-              onClick={() => setContactsPage(currentContactsPage + 1)}
-              aria-label="Next contacts page"
-            >
-              Next
-            </Button>
-          </nav>
-        )}
-      </div>
-
-      {/* Create Contact Modal */}
-      <Modal
-        isOpen={isCreateModalOpen}
-        onClose={() => { setIsCreateModalOpen(false); setAddressError(null); }}
-        title="Add New Contact"
-      >
-        <form onSubmit={handleCreateContact} className="space-y-4">
-          <Input
-            label="Name"
-            placeholder="Enter contact name"
-            value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-            required
-          />
-          
-          <div>
             <Input
               label="Address"
-              placeholder="Enter Stellar address (G...)"
+              placeholder="Enter Stellar address"
               value={formData.address}
-              onChange={(e) => {
-                setFormData({ ...formData, address: e.target.value });
-                setAddressError(null);
-              }}
+              onChange={(e) =>
+                setFormData({ ...formData, address: e.target.value })
+              }
               required
-              aria-describedby={addressError ? 'create-address-error' : undefined}
-              aria-invalid={!!addressError}
             />
-            {addressError && (
-              <p id="create-address-error" role="alert" className="mt-1 text-sm text-red-500">
-                {addressError}
-              </p>
-            )}
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Token Type
-            </label>
-            <select
-              value={formData.tokenType}
-              onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
-            >
-              <option value="STRK">STRK</option>
-              <option value="ETH">ETH</option>
-              <option value="DAI">DAI</option>
-            </select>
-          </div>
-          
-          <div className="flex justify-end space-x-3 pt-4">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => { setIsDeleteModalOpen(false); setContactToDelete(null); }}
-            >
-              Cancel
-            </Button>
-            <Button type="submit">
-              Add Contact
-            </Button>
-          </div>
-        </form>
-      </Modal>
 
-      {/* Edit Contact Modal */}
-      <Modal
-        isOpen={isEditModalOpen}
-        onClose={() => {
-          setIsEditModalOpen(false);
-          setIsAddressChangeConfirmationOpen(false);
-        }}
-        title={isAddressChangeConfirmationOpen ? 'Confirm Address Change' : 'Edit Contact'}
-      >
-        {isAddressChangeConfirmationOpen && editingContact ? (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-700 dark:text-gray-300">
-              Changing this destination can redirect future payments to a different account. Confirm the new address before saving.
-            </p>
-            <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-              <div>
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Current address</p>
-                <code className="break-all text-sm">{formatAddress(editingContact.address)}</code>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">New address</p>
-                <code className="break-all text-sm">{formatAddress(formData.address.trim())}</code>
-              </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Token Type
+              </label>
+              <select
+                value={formData.tokenType}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    tokenType: e.target.value as TokenType,
+                  })
+                }
+                className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+              >
+                {SUPPORTED_ASSETS.map((token) => (
+                  <option key={token} value={token}>
+                    {token}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div className="flex justify-end space-x-3 pt-2">
-              <Button type="button" variant="secondary" onClick={cancelAddressChange}>
+
+            <div className="flex justify-end space-x-3 pt-4">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setIsEditModalOpen(false)}
+              >
                 Cancel
               </Button>
-              <Button type="button" onClick={() => void persistContactUpdate()}>
-                Confirm destination change
-              </Button>
+              <Button type="submit">Update Contact</Button>
             </div>
-          </div>
-        ) : (
-        <form onSubmit={handleUpdateContact} className="space-y-4">
-          <Input
-            label="Name"
-            placeholder="Enter contact name"
-            value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-            required
-          />
-          
-          <div>
-            <Input
-              label="Address"
-              placeholder="Enter Stellar address (G...)"
-              value={formData.address}
-              onChange={(e) => {
-                setFormData({ ...formData, address: e.target.value });
-                setAddressError(null);
-              }}
-              required
-              aria-describedby={addressError ? 'edit-address-error' : undefined}
-              aria-invalid={!!addressError}
-            />
-            {addressError && (
-              <p id="edit-address-error" role="alert" className="mt-1 text-sm text-red-500">
-                {addressError}
-              </p>
-            )}
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Token Type
-            </label>
-            <select
-              value={formData.tokenType}
-              onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
-              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
-            >
-              <option value="STRK">STRK</option>
-              <option value="ETH">ETH</option>
-              <option value="DAI">DAI</option>
-            </select>
-          </div>
-          
-          <div className="flex justify-end space-x-3 pt-4">
-            <Button
-              type="button"
-              variant="danger"
-              onClick={handleConfirmDelete}
-              data-testid="confirm-delete-btn"
-            >
-              Delete
-            </Button>
-          </div>
-        </form>
-        )}
-      </Modal>
+          </form>
+        </Modal>
       </div>
     </ChatLayout>
   );
