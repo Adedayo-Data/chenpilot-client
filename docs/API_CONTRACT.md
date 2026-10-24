@@ -397,7 +397,7 @@ The service includes methods for Stellar/Starknet account and funding paths. `ge
 | `GET /auth/funding/auto-funding-stats` | No body. | `{"success":true,"data":{"totalFunded":10,"totalAccounts":8,"averageAmount":"5.25"}}` | Service method; funding statistics route. |
 | `GET /auth/funding/funded-account-balance` | No body. | `{"success":true,"data":{"balance":"10","hasBalance":true}}` | Service method only; no direct screen caller found. |
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
-| `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
+| `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[{"id":"tx1","hash":"abc...","ledger":123,"created_at":"2026-01-01T00:00:00Z","source_account":"G...","fee_charged":"100","operation_count":1,"successful":true,"operations":[],"memo":"invoice-42","memo_type":"text"}],"total":1,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. `memo` and `memo_type` are optional. `memo_type` may be `text`, `id`, `hash`, or `return`. The transactions page renders the memo below operations with a type badge; values longer than 40 characters are truncated in the UI with the full value accessible via the element's `title` attribute. |
 
 ### Transaction Schema & Direction Contract
 
@@ -429,16 +429,47 @@ The backend should return an explicit `confirmed` result only after it has autho
 
 ## Contacts Endpoints
 
-`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.
+`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create and update accept `tokenType` from the canonical set `XLM | USDC | USDT | BTC | ETH | AQUA`, which is defined once in `SUPPORTED_ASSETS` (`src/types/index.ts`) and shared by the contact editor, send form, contact picker, and Zod schemas. Passing a legacy value not in that set (e.g. `STRK`, `DAI`) will be rejected by the client's Zod schema with an actionable error message listing the supported tokens before the request reaches the server.
+`Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed?, defaultMemo?, defaultMemoType? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally. Both create and update also accept the optional memo-preset fields `defaultMemo` (string) and `defaultMemoType` (`none | text | id | hash`). When `defaultMemoType` is `none` or absent, `defaultMemo` is ignored.
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow calls the wrapper when online. A 404 is treated as an empty list. |
-| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Contact creation calls the wrapper when online; offline forms remain open and can be retried after reconnecting. A 404 becomes an explanatory failure envelope. |
-| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Contact updates call the wrapper when online; offline forms remain open and can be retried after reconnecting. A 404 becomes an explanatory failure envelope. |
-| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Contact deletion is disabled while offline and is never queued. A 404 becomes an explanatory failure envelope. |
+| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page; Redux slice calls this endpoint. 404 returns an empty-array success fallback. |
+| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM","defaultMemo":"inv-42","defaultMemoType":"text"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","defaultMemo":"inv-42","defaultMemoType":"text","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Create modal; only the targeted create button is disabled while in-flight. 404 returns an explanatory failure envelope. |
+| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace","defaultMemo":"ref-7","defaultMemoType":"id"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","defaultMemo":"ref-7","defaultMemoType":"id","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Edit modal; only the targeted contact's edit button is disabled while in-flight. Form values are preserved on failure so the user can retry. 404 becomes an explanatory failure envelope. |
+| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Delete confirmation; only the targeted contact's delete button is disabled while in-flight. Contact remains in the list on failure with a per-card error message. 404 becomes an explanatory failure envelope. |
 
-The send-payment form currently has no wired payment API method; it preserves the entered draft and disables submission while offline rather than claiming success or queueing a payment without a supported contract.
+### Contact Local Export
+
+The export is entirely client-side; no HTTP request is made and no contact data leaves the device. Clicking the **Export** button on the contacts page triggers a `application/json` browser download in the following format:
+
+```json
+{
+  "format": "chenpilot-contacts-v1",
+  "exportedAt": "2026-10-21T12:00:00.000Z",
+  "contacts": [
+    {
+      "name": "Ada",
+      "address": "G...",
+      "tokenType": "XLM",
+      "defaultMemo": "inv-42",
+      "defaultMemoType": "text",
+      "isFavorite": true,
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+Fields `defaultMemo`, `defaultMemoType`, and `isFavorite` are omitted when absent. Internal server-assigned fields (`id`, `updatedAt`) are never included. The `format` field is a version sentinel for future import support.
+
+### Memo Preset Prefill (Payment Form)
+
+When a contact with `defaultMemo` and a non-`none` `defaultMemoType` is selected in `SendPaymentForm`, those values are pre-filled into the memo fields. The user may edit or clear them before submitting. If a different contact is selected or the contact is cleared, the memo fields are reset to empty / `none`.
+| `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow; wrappers handle 404 specially. |
+| `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
+| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. Also used to toggle `isFavorite`; the client sends `{"isFavorite":true}` or `{"isFavorite":false}`. The flip is applied optimistically in Redux and reverted if the request fails. |
+| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. The client uses a soft-delete / undo pattern: the contact is removed from the UI immediately (`softDeleteContact`) and the backend call (`commitDeleteContact`) is deferred by 5 s to allow undo. If the backend call fails the contact is automatically restored in Redux state and an error toast is shown. |
 
 The contacts screen searches the complete loaded contact list and renders 24 matches per page. This is client-side pagination; the current contacts contract does not define page/limit parameters, so no paginated backend response is assumed.
 
@@ -485,6 +516,18 @@ The payment screen may use `data.nativeBalance` as the total native balance and 
 | `POST /liquidity` | `{"sortBy":"liquidity","sortOrder":"desc","limit":10}` | `{"success":true,"data":{"totalPools":1,"totalLiquidity":"100000","totalVolume24h":"5000","averageAPR":0.12,"activePools":1,"topPools":[],"networkMetrics":{"gasPrice":"1","blockNumber":123,"timestamp":"2026-01-01T00:00:00Z"}}}` | `LiquidityPoolStats` widget; errors show a generic inline message. |
 
 `topPools` items use `LiquidityPool`: pool id/name, token1/token2 metadata, reserve and liquidity strings, APR, 24-hour volume, fee, active flag, and `created_at`.
+
+## Payment Endpoint
+
+`SendPaymentRequest` fields: `recipientAddress` (Stellar G-address, required), `amount` (string, required), `tokenType` (one of `XLM | USDC | USDT | BTC | ETH | AQUA`, required), `memo` (string, optional, max 28 chars), `memoType` (`none | text | id | hash`, optional), `recipientContactId` (string, optional).
+
+The client normalises and validates the payload using `sendPaymentSchema` (Zod) before sending. The server is the authoritative gate for balance, authorisation, and duplicate-submission checks. Never rely on client-side validation as a security boundary.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /payments/send` | `{"recipientAddress":"G...","amount":"10","tokenType":"XLM","memoType":"text","memo":"rent"}` | `{"success":true,"data":{"transactionHash":"abc123","status":"success"}}` | Send page; shows a loading toast while in-flight, success toast with redirect to `/transactions` on success, or an error toast on failure. Payload logging and simulated delay have been removed — only the backend-confirmed result is surfaced to the user. |
+
+Self-transfer behaviour: the client compares `recipientAddress` (normalised) against `state.auth.user.address` and surfaces a field-level warning with an acknowledgement checkbox. This is a UX guard only. The backend must independently decide whether to allow or reject self-transfers.
 
 ## Browser Security And CSP Reports
 

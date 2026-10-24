@@ -135,10 +135,15 @@ export interface MfaVerifyData {
 }
 
 // Contact Management Types
+
+/** Memo types supported by Stellar. 'none' means no memo is attached. */
+export type ContactMemoType = "none" | "text" | "id" | "hash";
+
 export interface Contact {
   id: string;
   name: string;
   address: string;
+  tokenType: TokenType;
   tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
   note?: string;
   createdAt: string;
@@ -146,11 +151,19 @@ export interface Contact {
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;
+  /** Optional default memo value pre-filled when this contact is selected as recipient. */
+  defaultMemo?: string;
+  /** Memo type that accompanies defaultMemo. Ignored when defaultMemo is absent. */
+  defaultMemoType?: ContactMemoType;
 }
 
 export interface CreateContactRequest {
   name: string;
   address: string;
+  tokenType: TokenType;
+  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  defaultMemo?: string;
+  defaultMemoType?: ContactMemoType;
   tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
   note?: string;
 }
@@ -158,6 +171,32 @@ export interface CreateContactRequest {
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
+  tokenType?: TokenType;
+  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  defaultMemo?: string;
+  defaultMemoType?: ContactMemoType;
+}
+
+/**
+ * Portable export format for a user's contact list.
+ * Only user-owned, non-sensitive fields are included.
+ * Third-party services are never involved in generating this file.
+ */
+export interface ContactExportRecord {
+  name: string;
+  address: string;
+  tokenType: string;
+  defaultMemo?: string;
+  defaultMemoType?: ContactMemoType;
+  isFavorite?: boolean;
+  createdAt: string;
+}
+
+export interface ContactExportEnvelope {
+  /** Format identifier for future import support. */
+  format: "chenpilot-contacts-v1";
+  exportedAt: string;
+  contacts: ContactExportRecord[];
   tokenType?: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
   note?: string;
 }
@@ -237,6 +276,16 @@ export interface StellarTransaction {
   operation_count: number;
   successful: boolean;
   operations: StellarOperation[];
+  /**
+   * Memo value attached to the transaction, as returned by Horizon.
+   * Present only when the transaction carried a memo.
+   */
+  memo?: string;
+  /**
+   * Stellar memo type: 'text', 'id', 'hash', or 'return'.
+   * Absent when no memo was attached.
+   */
+  memo_type?: "text" | "id" | "hash" | "return";
   direction?: TransactionDirection;
 }
 
@@ -565,6 +614,20 @@ export interface ContactsState {
   isLoading: boolean;
   error: string | null;
   selectedContact: Contact | null;
+  /** Tracks which mutation is in-flight to prevent duplicate actions. */
+  mutating: {
+    create: boolean;
+    /** IDs of contacts currently being updated. */
+    update: string[];
+    /** IDs of contacts currently being deleted. */
+    delete: string[];
+  };
+  /** Per-mutation error messages keyed by operation type or contact id. */
+  mutationError: {
+    create: string | null;
+    update: Record<string, string>;
+    delete: Record<string, string>;
+  };
 }
 
 export interface ChatState {
@@ -634,7 +697,17 @@ export interface CardProps {
 }
 
 // Utility Types
-export type TokenType = "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+
+/**
+ * Canonical list of tokens supported by both the payment and contact systems.
+ * This is the single source of truth; add tokens here and they propagate
+ * everywhere automatically.  The value order controls the dropdown order.
+ */
+export const SUPPORTED_ASSETS = ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'] as const;
+
+/** Union type derived from SUPPORTED_ASSETS — do not list values separately. */
+export type TokenType = typeof SUPPORTED_ASSETS[number];
+
 export type AuthProvider = "email" | "google";
 export type MessageType = "user" | "agent" | "system";
 export type NotificationType = "success" | "error" | "warning" | "info";
@@ -776,6 +849,7 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
+  tokenType: TokenType;
   tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
@@ -805,11 +879,15 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
+  tokenType: TokenType;
   tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   note?: string;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;
+  /** Carries the contact's default memo preset so the payment form can prefill it. */
+  defaultMemo?: string;
+  defaultMemoType?: ContactMemoType;
 }
 
 export interface ContactPickerState {
@@ -825,14 +903,14 @@ export interface ContactPickerProps {
   onClose: () => void;
   isOpen: boolean;
   isLoading?: boolean;
-  tokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType?: TokenType;
 }
 
 export interface PaymentLimits {
   minAmount: number;
   maxAmount: number;
   maxMemoLength: number;
-  supportedTokens: TokenType[];
+  supportedTokens: readonly TokenType[];
 }
 
 export interface PaymentFeeEstimate {
