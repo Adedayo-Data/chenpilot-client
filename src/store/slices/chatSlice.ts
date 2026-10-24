@@ -1226,6 +1226,27 @@ const chatSlice = createSlice({
     setSelectedTags: (state, action: PayloadAction<string[]>) => {
       state.selectedTags = action.payload;
     },
+    toggleConversationPin: (state, action: PayloadAction<string>) => {
+      const conversation = state.conversations.find((item) => item.id === action.payload);
+      if (!conversation) return;
+      const nextPinned = !conversation.pinned;
+      conversation.pinned = nextPinned;
+      conversation.pinnedAt = nextPinned ? new Date().toISOString() : undefined;
+      if (typeof window !== "undefined") {
+        try {
+          const stored = JSON.parse(localStorage.getItem("conversations") || "[]");
+          const conversations = Array.isArray(stored) ? stored : [];
+          const index = conversations.findIndex(
+            (item: Conversation) => item.id === conversation.id,
+          );
+          if (index >= 0) conversations[index] = conversation;
+          else conversations.unshift(conversation);
+          localStorage.setItem("conversations", JSON.stringify(conversations));
+        } catch {
+          localStorage.setItem("conversations", JSON.stringify(state.conversations));
+        }
+      }
+    },
     setOnlineStatus: (state, action: PayloadAction<boolean>) => {
       state.isOnline = action.payload;
     },
@@ -1460,6 +1481,8 @@ const chatSlice = createSlice({
         state.isLoading = false;
         state.isTyping = false;
         state.currentConversation = action.payload.conversation;
+        if (action.payload.conversation?.id) {
+          clearChatDraft(action.payload.conversation.id);
         // The final agent message replaces the streamed preview in the same update, so the
         // reply is never shown twice (#261)
         if (state.streamingResponse?.requestId === action.meta.requestId) {
@@ -1741,6 +1764,7 @@ export const {
   addTag,
   removeTag,
   setSelectedTags,
+  toggleConversationPin,
   setOnlineStatus,
   queueMessage,
   dequeueMessage,

@@ -61,6 +61,7 @@ import { ChatMessage } from "@/types";
 import { usePathname, useRouter } from "next/navigation";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { AgentToolsMenu } from "@/components/chat/AgentToolsMenu";
+import { ChatDraftComposer } from "@/components/chat/ChatDraftComposer";
 import { QueryStopButton } from "@/components/chat/QueryStopButton";
 
 // ─── Speech Recognition ambient types (used by the old transcription path) ────
@@ -364,6 +365,14 @@ export const ChatEngine: React.FC = () => {
       onSubmit={(event) => void handleSendMessage(event)}
       className={`w-full ${sticky ? 'mx-auto max-w-4xl px-4 py-5' : 'mb-8 max-w-3xl'}`}
     >
+      <div className="relative bg-[#1A1A2E] rounded-2xl p-6 border border-gray-800/50 shadow-xl">
+        <ChatDraftComposer
+          inputRef={inputRef}
+          conversationId={currentConversation?.id ?? null}
+          value={inputValue}
+          onChange={setInputValue}
+          onEnter={() => {
+            void handleSendMessage();
       <div className="rounded-2xl border border-gray-800/50 bg-[#1A1A2E] p-5 shadow-xl">
         <input
           ref={inputRef}

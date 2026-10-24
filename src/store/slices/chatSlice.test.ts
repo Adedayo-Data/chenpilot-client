@@ -20,6 +20,8 @@ import chatReducer, {
 } from './chatSlice';
 import authReducer from './authSlice';
 import apiService from '@/services/api';
+import { ChatMessage } from '@/types';
+import { getChatDraft, setChatDraft } from '@/utils/format';
 import { AgentQueryResponse, ChatMessage } from '@/types';
 
 vi.mock('@/services/api', () => ({
@@ -411,6 +413,26 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
     });
   });
 
+  it('clears only the sent conversation draft after a successful send', async () => {
+    setChatDraft('conv-keep', 'leave me');
+    setChatDraft('conv-send', 'send me');
+    store.dispatch(setCurrentConversation({
+      id: 'conv-send',
+      title: 'Send',
+      isActive: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      userId: 'user_test_123',
+      messageCount: 0,
+    }));
+    (apiService.queryAgent as any).mockResolvedValueOnce({
+      result: { success: true, data: 'ok', serverTimestamp: 1000 },
+    });
+
+    await store.dispatch(sendMessage('hello'));
+
+    expect(getChatDraft('conv-send')).toBe('');
+    expect(getChatDraft('conv-keep')).toBe('leave me');
   describe('Abort and regenerate', () => {
     it('resets loading flags and marks the turn cancelled without an error bubble', async () => {
       mockQueryAgent.mockImplementation(
