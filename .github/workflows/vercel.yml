@@ -81,6 +81,9 @@ jobs:
             node -e "const s=require('./coverage/coverage-summary.json').total; console.log('lines', s.lines.pct, 'statements', s.statements.pct, 'functions', s.functions.pct, 'branches', s.branches.pct)"
           fi
 
+      - name: Run accessibility tests
+        run: pnpm test:a11y
+
       - name: Build project
         run: pnpm build
 
