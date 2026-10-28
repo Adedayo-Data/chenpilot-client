@@ -16,6 +16,8 @@
     "lighthouse": "lhci autorun",
     "lighthouse:collect": "lhci collect",
     "lighthouse:assert": "lhci assert",
+    "test:a11y": "vitest run src/test/accessibility.test.tsx",
+    "test:e2e": "playwright test",
     "audit": "pnpm audit --audit-level=high --prod",
     "audit:full": "pnpm audit --audit-level=moderate",
     "prepare": "husky"
@@ -46,6 +48,7 @@
     "@eslint/eslintrc": "^3",
     "@eslint/js": "^9.39.2",
     "@lhci/cli": "^0.14.0",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
@@ -55,6 +58,7 @@
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
     "@vitest/coverage-v8": "4.1.10",
+    "axe-core": "^4.14.0",
     "eslint": "^8.57.1",
     "eslint-config-next": "15.5.4",
     "eslint-plugin-react-hooks": "^6.1.1",
@@ -63,7 +67,8 @@
     "lint-staged": "^15.5.2",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "vitest-axe": "^0.1.0"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [

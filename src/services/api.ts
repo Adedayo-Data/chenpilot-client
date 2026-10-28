@@ -160,6 +160,7 @@ export const requestAccountFunding = async (
             "Account funded successfully via Stellar Testnet Friendbot fallback.",
           txHash: friendbotResponse.data.hash,
         };
+      } catch (_friendbotError: unknown) {
       } catch {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`,
@@ -202,6 +203,11 @@ interface PaymentRequestConfig extends AxiosRequestConfig {
   paymentOperation?: boolean;
 }
 
+/**
+ * Main API service handling HTTP requests, authentication state,
+ * error retries, background token refreshes, and backend integrations.
+ */
+export class ApiService {
 class ApiService {
   private api: AxiosInstance;
   private token: string | null = null;

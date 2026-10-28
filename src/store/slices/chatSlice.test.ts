@@ -5,8 +5,6 @@ import chatReducer, {
   regenerateLastResponse,
   ABORT_ERROR,
   addMessage,
-  addUserMessage,
-  addSystemMessage,
   setMessages,
   updateMessage,
   setTyping,
@@ -23,12 +21,16 @@ import chatReducer, {
 import authReducer from './authSlice';
 import apiService from '@/services/api';
 import { ChatMessage } from '@/types';
+import { getChatDraft, setChatDraft } from '@/utils/format';
+import { AgentQueryResponse, ChatMessage } from '@/types';
 
 vi.mock('@/services/api', () => ({
   default: {
     queryAgent: vi.fn(),
   },
 }));
+
+const mockQueryAgent = vi.mocked(apiService.queryAgent);
 
 describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
   let store: ReturnType<typeof createTestStore>;
@@ -182,7 +184,7 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
 
   describe('Optimistic Updates', () => {
     it('adds user message optimistically with pending status immediately on dispatch', () => {
-      (apiService.queryAgent as any).mockImplementation(
+      mockQueryAgent.mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve({ result: { success: true, data: 'OK' } }), 100))
       );
 
@@ -201,7 +203,7 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
 
     it('resolves optimistic message to success status and updates server timestamp on fulfilled', async () => {
       const serverTime = 1774959000000;
-      (apiService.queryAgent as any).mockResolvedValueOnce({
+      mockQueryAgent.mockResolvedValueOnce({
         result: {
           success: true,
           data: 'Here is the response',
@@ -229,17 +231,17 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
 
   describe('Race Condition Reordering (Out-of-Order Network Arrival)', () => {
     it('correctly reorders messages when Request 1 arrives after Request 2 due to slow network', async () => {
-      let resolveQuery1: (val: any) => void;
-      let resolveQuery2: (val: any) => void;
+      let resolveQuery1: (value: AgentQueryResponse) => void;
+      let resolveQuery2: (value: AgentQueryResponse) => void;
 
-      const p1 = new Promise((resolve) => {
+      const p1 = new Promise<AgentQueryResponse>((resolve) => {
         resolveQuery1 = resolve;
       });
-      const p2 = new Promise((resolve) => {
+      const p2 = new Promise<AgentQueryResponse>((resolve) => {
         resolveQuery2 = resolve;
       });
 
-      (apiService.queryAgent as any)
+      mockQueryAgent
         .mockImplementationOnce(() => p1)
         .mockImplementationOnce(() => p2);
 
@@ -318,7 +320,7 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
         { id: 'q3', query: 'Check balance', serverTime: 30000, delay: 30 },
       ];
 
-      (apiService.queryAgent as any).mockImplementation(({ query }: { query: string }) => {
+      mockQueryAgent.mockImplementation(({ query }: { query: string }) => {
         const item = queries.find((q) => q.query === query)!;
         return new Promise((resolve) =>
           setTimeout(() => {
@@ -353,7 +355,7 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
     });
 
     it('marks optimistic message as failed when request is rejected without breaking order', async () => {
-      (apiService.queryAgent as any).mockRejectedValueOnce(new Error('Network error: connection lost'));
+      mockQueryAgent.mockRejectedValueOnce(new Error('Network error: connection lost'));
 
       await store.dispatch(sendMessage({ query: 'Failed prompt', tempId: 'fail-1' }));
 
@@ -411,9 +413,29 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
     });
   });
 
+  it('clears only the sent conversation draft after a successful send', async () => {
+    setChatDraft('conv-keep', 'leave me');
+    setChatDraft('conv-send', 'send me');
+    store.dispatch(setCurrentConversation({
+      id: 'conv-send',
+      title: 'Send',
+      isActive: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      userId: 'user_test_123',
+      messageCount: 0,
+    }));
+    (apiService.queryAgent as any).mockResolvedValueOnce({
+      result: { success: true, data: 'ok', serverTimestamp: 1000 },
+    });
+
+    await store.dispatch(sendMessage('hello'));
+
+    expect(getChatDraft('conv-send')).toBe('');
+    expect(getChatDraft('conv-keep')).toBe('leave me');
   describe('Abort and regenerate', () => {
     it('resets loading flags and marks the turn cancelled without an error bubble', async () => {
-      (apiService.queryAgent as any).mockImplementation(
+      mockQueryAgent.mockImplementation(
         (_data: unknown, options?: { signal?: AbortSignal }) =>
           new Promise((_resolve, reject) => {
             options?.signal?.addEventListener('abort', () => {
@@ -451,7 +473,7 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
         content: 'old answer',
         timestamp: '2026-09-29T10:00:02.000Z',
       }));
-      (apiService.queryAgent as any).mockResolvedValueOnce({
+      mockQueryAgent.mockResolvedValueOnce({
         result: { success: true, data: 'new answer' },
       });
 

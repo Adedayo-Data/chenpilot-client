@@ -442,9 +442,7 @@ export class SocketManager {
     }
 
     if (this.socket) {
-      if ((this.socket as any).auth) {
-        (this.socket as any).auth = { token: newToken };
-      }
+      this.socket.auth = { token: newToken };
       if (!this.isRefreshingToken) {
         this.isRefreshingToken = true;
         this.removeRegisteredHandlers(this.socket);

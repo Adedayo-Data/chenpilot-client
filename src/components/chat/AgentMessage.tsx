@@ -2,10 +2,100 @@
 
 import React, { useState } from "react";
 import { logger } from "../../utils/logger";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 import { ChatMessage } from "@/types";
 import { Copy, Check, RefreshCw } from "lucide-react";
 import { AgentMarkdown } from "./AgentMarkdown";
 import ExecutionTrace from "./ExecutionTrace";
+
+type DataRecord = Record<string, unknown>;
+
+function isDataRecord(value: unknown): value is DataRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function recordList(value: unknown): DataRecord[] {
+  return Array.isArray(value) ? value.filter(isDataRecord) : [];
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function displayField(record: DataRecord, key: string): string {
+  return displayValue(record[key]);
+}
+
+function nestedRecord(record: DataRecord, key: string): DataRecord {
+  const value = record[key];
+  return isDataRecord(value) ? value : {};
+}
+
+const markdownComponents: Components = {
+  p: ({ children, ...props }) => (
+    <p className="mb-3 last:mb-0" {...props}>
+      {children}
+    </p>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="font-semibold text-white" {...props}>
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em className="italic text-gray-300" {...props}>
+      {children}
+    </em>
+  ),
+  code: ({ className, children, ...props }) => {
+    const inline = !className?.includes('language-');
+    return (
+      <CodeBlock className={className} inline={inline} {...props}>
+        {String(children).replace(/\n$/, '')}
+      </CodeBlock>
+    );
+  },
+  pre: ({ children }) => <>{children}</>,
+  ul: ({ children, ...props }) => (
+    <ul className="mb-3 list-disc list-inside space-y-1" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="mb-3 list-decimal list-inside space-y-1" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li className="text-gray-200" {...props}>
+      {children}
+    </li>
+  ),
+  h1: ({ children, ...props }) => (
+    <h1 className="mb-4 text-2xl font-bold text-white" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }) => (
+    <h2 className="mb-3 text-xl font-bold text-white" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="mb-2 text-lg font-semibold text-white" {...props}>
+      {children}
+    </h3>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote className="my-4 border-l-4 border-purple-500 pl-4 italic text-gray-300" {...props}>
+      {children}
+    </blockquote>
+  ),
+};
 
 interface AgentMessageProps {
   message: ChatMessage;
@@ -35,17 +125,17 @@ export default function AgentMessage({
     }
 
     if (typeof message.content === "object" && message.content !== null) {
-      const content = message.content as any;
+      const content = message.content as DataRecord;
       logger.debug("[AgentMessage] Object content keys:", Object.keys(content));
 
       // Handle the new backend response format with vaults array
-      if (content.vaults && Array.isArray(content.vaults)) {
-        return renderVaultsContent(content.vaults, content.marketInsights);
+      if (Array.isArray(content.vaults)) {
+        return renderVaultsContent(recordList(content.vaults), content.marketInsights);
       }
 
       // Handle troves positions response
-      if (content.positions && Array.isArray(content.positions)) {
-        return renderPositionsContent(content.positions);
+      if (Array.isArray(content.positions)) {
+        return renderPositionsContent(recordList(content.positions));
       }
 
       // Handle troves quote response
@@ -59,8 +149,8 @@ export default function AgentMessage({
       }
 
       // Handle troves strategies response
-      if (content.strategies && Array.isArray(content.strategies)) {
-        return renderStrategiesContent(content.strategies);
+      if (Array.isArray(content.strategies)) {
+        return renderStrategiesContent(recordList(content.strategies));
       }
 
       // Handle troves yield response
@@ -85,40 +175,42 @@ export default function AgentMessage({
     return String(message.content || "");
   };
 
-  const renderVaultsContent = (vaults: any[], marketInsights?: any) => {
+  const renderVaultsContent = (vaults: DataRecord[], marketInsights?: unknown) => {
     let content = `🏦 **Available Vaults (${vaults.length})**\n\n`;
 
-    // Add market insights if available
-    if (marketInsights) {
+    if (isDataRecord(marketInsights)) {
+      const topPerformer = nestedRecord(marketInsights, 'topPerformer');
+      const riskDistribution = nestedRecord(marketInsights, 'riskDistribution');
       content +=
         `📊 **Market Overview**\n` +
-        `• Total TVL: ${marketInsights.totalTvl}\n` +
-        `• Average APY: ${marketInsights.averageApy}\n` +
-        `• Top Performer: ${marketInsights.topPerformer.name} (${marketInsights.topPerformer.apy})\n` +
-        `• Risk Distribution: ${marketInsights.riskDistribution.highRisk} High, ${marketInsights.riskDistribution.mediumRisk} Medium, ${marketInsights.riskDistribution.lowRisk} Low Risk\n\n`;
+        `• Total TVL: ${displayField(marketInsights, 'totalTvl')}\n` +
+        `• Average APY: ${displayField(marketInsights, 'averageApy')}\n` +
+        `• Top Performer: ${displayField(topPerformer, 'name')} (${displayField(topPerformer, 'apy')})\n` +
+        `• Risk Distribution: ${displayField(riskDistribution, 'highRisk')} High, ${displayField(riskDistribution, 'mediumRisk')} Medium, ${displayField(riskDistribution, 'lowRisk')} Low Risk\n\n`;
     }
 
-    // Add vault details
     content +=
       `**Vault Details:**\n\n` +
       vaults
         .map(
-          (vault) =>
-            `**${vault.name}**\n` +
-            `• Asset: ${vault.asset}\n` +
-            `• APY: ${vault.apy}\n` +
-            `• TVL: ${vault.tvl}\n` +
-            `• Strategy: ${vault.strategy}\n` +
-            `• Min Deposit: ${vault.minDeposit} ${vault.asset}\n` +
-            `• Risk Level: ${vault.riskLevel}\n` +
-            `• Fees: ${vault.fees.managementFee * 100}% management, ${vault.fees.performanceFee * 100}% performance\n`,
+          (vault) => {
+            const fees = nestedRecord(vault, 'fees');
+            return `**${displayField(vault, 'name')}**\n` +
+              `• Asset: ${displayField(vault, 'asset')}\n` +
+              `• APY: ${displayField(vault, 'apy')}\n` +
+              `• TVL: ${displayField(vault, 'tvl')}\n` +
+              `• Strategy: ${displayField(vault, 'strategy')}\n` +
+              `• Min Deposit: ${displayField(vault, 'minDeposit')} ${displayField(vault, 'asset')}\n` +
+              `• Risk Level: ${displayField(vault, 'riskLevel')}\n` +
+              `• Fees: ${displayValue(fees.managementFee)} management, ${displayValue(fees.performanceFee)} performance\n`;
+          },
         )
         .join("\n");
 
     return content;
   };
 
-  const renderPositionsContent = (positions: any[]) => {
+  const renderPositionsContent = (positions: DataRecord[]) => {
     if (positions.length === 0) {
       return "📊 **Your Positions**\n\nNo positions found.";
     }
@@ -128,119 +220,128 @@ export default function AgentMessage({
       positions
         .map(
           (position) =>
-            `**${position.vaultName}**\n` +
-            `• Asset: ${position.asset}\n` +
-            `• Shares: ${position.shares}\n` +
-            `• Assets: ${position.assets}\n` +
-            `• Estimated Value: $${position.estimatedValue}\n` +
-            `• APY: ${position.apy}%\n` +
-            `• Total Earned: $${position.totalEarned}\n` +
-            `• Deposited: ${position.depositedAt}\n`,
+            `**${displayField(position, 'vaultName')}**\n` +
+            `• Asset: ${displayField(position, 'asset')}\n` +
+            `• Shares: ${displayField(position, 'shares')}\n` +
+            `• Assets: ${displayField(position, 'assets')}\n` +
+            `• Estimated Value: $${displayField(position, 'estimatedValue')}\n` +
+            `• APY: ${displayField(position, 'apy')}%\n` +
+            `• Total Earned: $${displayField(position, 'totalEarned')}\n` +
+            `• Deposited: ${displayField(position, 'depositedAt')}\n`,
         )
         .join("\n")
     );
   };
 
-  const renderQuoteContent = (quote: any) => {
+  const renderQuoteContent = (quote: DataRecord) => {
     return (
       `💰 **Deposit Quote**\n\n` +
-      `• Vault: ${quote.vaultId}\n` +
-      `• Asset: ${quote.asset}\n` +
-      `• Amount: ${quote.amount}\n` +
-      `• Estimated Shares: ${quote.estimatedShares}\n` +
-      `• APY: ${quote.apy}%\n` +
-      `• Estimated Yield: $${quote.estimatedYield}\n` +
-      `• Time Horizon: ${quote.timeHorizon}\n` +
-      `• Fees: ${quote.fees}\n`
+      `• Vault: ${displayField(quote, 'vaultId')}\n` +
+      `• Asset: ${displayField(quote, 'asset')}\n` +
+      `• Amount: ${displayField(quote, 'amount')}\n` +
+      `• Estimated Shares: ${displayField(quote, 'estimatedShares')}\n` +
+      `• APY: ${displayField(quote, 'apy')}%\n` +
+      `• Estimated Yield: $${displayField(quote, 'estimatedYield')}\n` +
+      `• Time Horizon: ${displayField(quote, 'timeHorizon')}\n` +
+      `• Fees: ${displayField(quote, 'fees')}\n`
     );
   };
 
-  const renderDepositQuoteContent = (data: any) => {
-    const { message, vault, deposit, yieldProjections, fees, riskAssessment } =
-      data;
+  const renderDepositQuoteContent = (data: DataRecord) => {
+    const vault = nestedRecord(data, 'vault');
+    const deposit = nestedRecord(data, 'deposit');
+    const yieldProjections = nestedRecord(data, 'yieldProjections');
+    const fees = nestedRecord(data, 'fees');
+    const riskAssessment = nestedRecord(data, 'riskAssessment');
 
     return (
-      `💰 **${message}**\n\n` +
+      `💰 **${displayField(data, 'message')}**\n\n` +
       `**Vault Information:**\n` +
-      `• Name: ${vault.name}\n` +
-      `• Asset: ${vault.asset}\n` +
-      `• APY: ${vault.apy}\n` +
-      `• TVL: ${vault.tvl}\n` +
-      `• Strategy: ${vault.strategy}\n\n` +
+      `• Name: ${displayField(vault, 'name')}\n` +
+      `• Asset: ${displayField(vault, 'asset')}\n` +
+      `• APY: ${displayField(vault, 'apy')}\n` +
+      `• TVL: ${displayField(vault, 'tvl')}\n` +
+      `• Strategy: ${displayField(vault, 'strategy')}\n\n` +
       `**Deposit Details:**\n` +
-      `• Amount: ${deposit.amount} ${deposit.asset}\n` +
-      `• Estimated Shares: ${deposit.estimatedShares}\n` +
-      `• Share Price: ${deposit.sharePrice}\n\n` +
+      `• Amount: ${displayField(deposit, 'amount')} ${displayField(deposit, 'asset')}\n` +
+      `• Estimated Shares: ${displayField(deposit, 'estimatedShares')}\n` +
+      `• Share Price: ${displayField(deposit, 'sharePrice')}\n\n` +
       `**Yield Projections:**\n` +
-      `• Daily: ${yieldProjections.daily}\n` +
-      `• Weekly: ${yieldProjections.weekly}\n` +
-      `• Monthly: ${yieldProjections.monthly}\n` +
-      `• Annual: ${yieldProjections.annual}\n\n` +
+      `• Daily: ${displayField(yieldProjections, 'daily')}\n` +
+      `• Weekly: ${displayField(yieldProjections, 'weekly')}\n` +
+      `• Monthly: ${displayField(yieldProjections, 'monthly')}\n` +
+      `• Annual: ${displayField(yieldProjections, 'annual')}\n\n` +
       `**Fees:**\n` +
-      `• Management Fee: ${fees.managementFee} (${fees.managementFeeAmount})\n` +
-      `• Performance Fee: ${fees.performanceFee} (${fees.performanceFeeAmount})\n\n` +
+      `• Management Fee: ${displayField(fees, 'managementFee')} (${displayField(fees, 'managementFeeAmount')})\n` +
+      `• Performance Fee: ${displayField(fees, 'performanceFee')} (${displayField(fees, 'performanceFeeAmount')})\n\n` +
       `**Risk Assessment:**\n` +
-      `• Risk Level: ${riskAssessment.riskLevel}\n` +
-      `• Recommendation: ${riskAssessment.recommendation}\n`
+      `• Risk Level: ${displayField(riskAssessment, 'riskLevel')}\n` +
+      `• Recommendation: ${displayField(riskAssessment, 'recommendation')}\n`
     );
   };
 
-  const renderStrategiesContent = (strategies: any[]) => {
+  const renderStrategiesContent = (strategies: DataRecord[]) => {
     return (
       `🎯 **Available Strategies (${strategies.length})**\n\n` +
       strategies
         .map(
-          (strategy) =>
-            `**${strategy.name}**\n` +
-            `• Description: ${strategy.description}\n` +
-            `• Risk Level: ${strategy.riskLevel}\n` +
-            `• Target APY: ${strategy.targetApy}%\n` +
-            `• Current APY: ${strategy.currentApy}%\n` +
-            `• TVL: $${strategy.tvl}\n` +
-            `• Supported Assets: ${strategy.supportedAssets.join(", ")}\n` +
-            `• Strategy Type: ${strategy.strategyType}\n`,
+          (strategy) => {
+            const supportedAssets = Array.isArray(strategy.supportedAssets)
+              ? strategy.supportedAssets.map(displayValue).join(', ')
+              : displayValue(strategy.supportedAssets);
+            return `**${displayField(strategy, 'name')}**\n` +
+              `• Description: ${displayField(strategy, 'description')}\n` +
+              `• Risk Level: ${displayField(strategy, 'riskLevel')}\n` +
+              `• Target APY: ${displayField(strategy, 'targetApy')}%\n` +
+              `• Current APY: ${displayField(strategy, 'currentApy')}%\n` +
+              `• TVL: $${displayField(strategy, 'tvl')}\n` +
+              `• Supported Assets: ${supportedAssets}\n` +
+              `• Strategy Type: ${displayField(strategy, 'strategyType')}\n`;
+          },
         )
         .join("\n")
     );
   };
 
-  const renderYieldContent = (yieldData: any) => {
+  const renderYieldContent = (yieldData: DataRecord) => {
     return (
-      `📈 **Yield Data for ${yieldData.vaultName}**\n\n` +
-      `• Asset: ${yieldData.asset}\n` +
-      `• Current APY: ${yieldData.currentApy}%\n` +
-      `• Historical APY: ${yieldData.historicalApy}%\n` +
-      `• TVL: $${yieldData.tvl}\n` +
-      `• Risk Level: ${yieldData.riskLevel}\n` +
-      `• Last Updated: ${yieldData.lastUpdated}\n`
+      `📈 **Yield Data for ${displayField(yieldData, 'vaultName')}**\n\n` +
+      `• Asset: ${displayField(yieldData, 'asset')}\n` +
+      `• Current APY: ${displayField(yieldData, 'currentApy')}%\n` +
+      `• Historical APY: ${displayField(yieldData, 'historicalApy')}%\n` +
+      `• TVL: $${displayField(yieldData, 'tvl')}\n` +
+      `• Risk Level: ${displayField(yieldData, 'riskLevel')}\n` +
+      `• Last Updated: ${displayField(yieldData, 'lastUpdated')}\n`
     );
   };
 
-  const renderHealthContent = (health: any) => {
+  const renderHealthContent = (health: DataRecord) => {
     return (
       `🏥 **Troves Health Status**\n\n` +
-      `• Status: ${health.status}\n` +
-      `• Total TVL: $${health.totalTvl}\n` +
-      `• Total APY: ${health.totalApy}%\n` +
-      `• Vault Status: ${health.vaultStatus}\n` +
-      `• Recommendations: ${health.recommendations}\n`
+      `• Status: ${displayField(health, 'status')}\n` +
+      `• Total TVL: $${displayField(health, 'totalTvl')}\n` +
+      `• Total APY: ${displayField(health, 'totalApy')}%\n` +
+      `• Vault Status: ${displayField(health, 'vaultStatus')}\n` +
+      `• Recommendations: ${displayField(health, 'recommendations')}\n`
     );
   };
 
-  const renderOperationContent = (operation: any) => {
+  const renderOperationContent = (operation: DataRecord) => {
     if (operation.success) {
+      const quote = operation.quote;
+      const vault = nestedRecord(operation, 'vault');
       return (
-        `✅ **${operation.message || "Operation Successful"}**\n\n` +
-        (operation.quote
-          ? `Quote: ${JSON.stringify(operation.quote, null, 2)}\n`
+        `✅ **${displayValue(operation.message || 'Operation Successful')}**\n\n` +
+        (quote
+          ? `Quote: ${JSON.stringify(quote, null, 2)}\n`
           : "") +
         (operation.vault
-          ? `Vault: ${operation.vault.name} (${operation.vault.asset})\n`
+          ? `Vault: ${displayField(vault, 'name')} (${displayField(vault, 'asset')})\n`
           : "") +
-        (operation.note ? `\n${operation.note}` : "")
+        (operation.note ? `\n${displayValue(operation.note)}` : "")
       );
     } else {
-      return `❌ **Operation Failed**\n\n${operation.message || "Unknown error occurred"}`;
+      return `❌ **Operation Failed**\n\n${displayValue(operation.message || 'Unknown error occurred')}`;
     }
   };
 
@@ -261,6 +362,12 @@ export default function AgentMessage({
   return (
     <div className="text-white text-left group relative">
       <div className="prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownComponents}
+        >
+          {renderContent()}
+        </ReactMarkdown>
         <AgentMarkdown>{renderContent()}</AgentMarkdown>
       </div>
 

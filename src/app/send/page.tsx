@@ -1,25 +1,17 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
 import { ChatLayout } from '@/components/layout/ChatLayout';
+import { OfflineIndicator } from '@/components/chat/OfflineIndicator';
 import SendPaymentForm from '@/components/payment/SendPaymentForm';
 import { PaymentStatusResult, PaymentSubmissionResult, SendPaymentRequest } from '@/types';
 import apiService from '@/services/api';
 import { StellarNetworkBadge } from '@/components/wallet/StellarNetworkBadge';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import apiService from '@/services/api';
-import toast from 'react-hot-toast';
-import apiService from '@/services/api';
-import { getPaymentFailureMessage } from '@/utils/validation';
-
-interface NativeBalanceBreakdown {
-  total: string;
-  reserve: string;
-}
 
 export default function SendPaymentPage() {
   const router = useRouter();
@@ -49,10 +41,6 @@ export default function SendPaymentPage() {
       // Balance guidance is omitted when the backend cannot provide its breakdown.
     });
 
-    return () => {
-      isActive = false;
-    };
-  }, [dispatch, isAuthenticated, router]);
 
   const handleSendPayment = async (data: SendPaymentRequest) => {
     // NOTE: the self-transfer comparison in SendPaymentForm is a UX hint only.
@@ -107,6 +95,7 @@ export default function SendPaymentPage() {
 
   return (
     <ChatLayout>
+      <OfflineIndicator />
       <div className="h-full flex flex-col bg-[#060816] text-white overflow-hidden">
         {/* Header */}
         <div className="border-b border-gray-800 bg-[#060816]/80 backdrop-blur-xl">

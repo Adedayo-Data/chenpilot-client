@@ -439,4 +439,5 @@ export const {
   setSessionExpirationTime,
   setSessionWarningActive,
 } = authSlice.actions;
+
 export default authSlice.reducer;
